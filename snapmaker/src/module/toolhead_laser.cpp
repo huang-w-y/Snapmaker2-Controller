@@ -45,6 +45,7 @@
 #define TimSetPwm(n)  Tim1SetCCR4(n)
 #define TimGetPwm()  Tim1GetCCR4()
 
+// 实例化各个激光头
 ToolHeadLaser laser_1_6_w(MODULE_DEVICE_ID_1_6_W_LASER);
 ToolHeadLaser laser_10w(MODULE_DEVICE_ID_10W_LASER);
 ToolHeadLaser laser_20w(MODULE_DEVICE_ID_20W_LASER);
@@ -105,10 +106,12 @@ static __attribute__((section(".data"))) uint8_t power_table_40W[]= {
   255
 };
 
+// 处理获取到的激光焦距
 static void CallbackAckLaserFocus(CanStdDataFrame_t &cmd) {
   laser->focus(cmd.data[0]<<8 | cmd.data[1]);
 }
 
+// 处理接收到的激光安全状态
 static void CallbackAckReportSecurity(CanStdDataFrame_t &cmd) {
   laser->security_status_ = cmd.data[0];
   laser->pitch_ = (cmd.data[1] << 8) | cmd.data[2];
@@ -119,41 +122,50 @@ static void CallbackAckReportSecurity(CanStdDataFrame_t &cmd) {
   if ((laser->device_id() == MODULE_DEVICE_ID_40W_LASER || laser->device_id() == MODULE_DEVICE_ID_20W_LASER))
     laser->fire_sensor_trigger_ = cmd.data[7];
 
+  // 每次获取到激光安全状态后，都需要推送到 HMI 也就是主机
   laser->need_to_tell_hmi_ = true;
 
+  // 若检测到有异常情况，则需要关闭激光
   if (laser->security_status_ != 0) {
     laser->need_to_turnoff_laser_ = true;
 
+    // 若当前处于正常作业或暂停状态，则
     if (systemservice.GetCurrentStage() == SYSTAGE_WORK || systemservice.GetCurrentStage() == SYSTAGE_PAUSE) {
       quickstop.Trigger(QS_SOURCE_SECURITY, true);
     } else if (laser->laser_status_ == LASER_ENABLE) {
+      // 若当前处于使能状态，则调用关闭激光
       laser->TurnOff();
     }
   }
 }
 
+// 处理获取到的红十字光状态
 static void CallbackAckGetCrossLight(CanStdDataFrame_t &cmd) {
   laser->cross_light_state_ = cmd.data[0];
   laser->cross_light_state_update_ = true;
 }
 
+// 处理获取到的火焰传感器其灵敏度
 static void CallbackAckGetFireSensorSensitivity(CanStdDataFrame_t &cmd) {
   laser->fire_sensor_trigger_value_ = cmd.data[0] | (cmd.data[1] << 8);
   laser->fire_sensor_sensitivity_update_ = true;
 }
 
+// 处理获取到的红十字光偏移量
 static void CallbackAckGetCrossLightOffset(CanStdDataFrame_t &cmd) {
   laser->crosslight_offset_x = *(float *)(&cmd.data[0]);
   laser->crosslight_offset_y = *(float *)(&cmd.data[4]);
   laser->crosslight_offset_update_ = true;
 }
 
+// 处理获取到的火焰传感器原始数据
 static void CallbackAckReportFireSensorRawData(CanStdDataFrame_t &cmd) {
   laser->fire_sensor_rawdata_ = cmd.data[0] | (cmd.data[1]<<8);
   LOG_I("frd: %d\n", laser->fire_sensor_rawdata_);
 }
 
 
+// 初始化接口
 ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   ErrCode ret;
 
@@ -165,11 +177,13 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
 
   LOG_I("\tGot toolhead Laser! device id %d\n", device_id_);
 
+  // 检测挤出机端口是否配置正确
   if (axis_to_port[E_AXIS] != PORT_8PIN_1) {
     LOG_E("toolhead Laser failed: Please use the <M1029 E1> set E port\n");
     return E_HARDWARE;
   }
 
+  // 初始化 8P 口
   ret = ModuleBase::InitModule8p(mac, E0_DIR_PIN, 0);
   if (ret != E_SUCCESS)
     return ret;
@@ -178,6 +192,7 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   if (mac_index_ != MODULE_MAC_INDEX_INVALID)
     return E_SAME_STATE;
 
+  // 获取 FuncID 列表
   cmd.mac    = mac;
   cmd.data   = func_buffer;
   cmd.length = 1;
@@ -193,6 +208,8 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   function.sub_index = 0;
   function.priority  = MODULE_FUNC_PRIORITY_DEFAULT;
 
+
+  // 注册 FuncID 相关回调
   // register function ids to can host, it will assign message id
   for (int i = 0; i < cmd.data[MODULE_EXT_CMD_INDEX_DATA]; i++) {
     function.id = (cmd.data[i*2 + 2]<<8 | cmd.data[i*2 + 3]);
@@ -223,8 +240,10 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
       msg_id_set_fan_ = message_id[i];
   }
 
+  // 绑定 FunCID
   ret = canhost.BindMessageID(cmd, message_id);
 
+  // 设置激光 PWM 相关定时器
   if (MODULE_DEVICE_ID_10W_LASER == device_id() || MODULE_DEVICE_ID_1_6_W_LASER == device_id()) {
     Tim1PwmInit(1862, 254);     // 1.6w & 10w, no modification of the old laser control frequency for the time being  // 250Hz
     esp32_.Init(&MSerial3, EXECUTOR_SERIAL_IRQ_PRIORITY);
@@ -237,6 +256,8 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   state_     = TOOLHEAD_LASER_STATE_OFF;
 
   laser = this;
+
+  // 设置执行头类型和激光功率映射表
   // set toolhead
   power_table_ = power_table_1_6W;
   if (laser->device_id_ == MODULE_DEVICE_ID_1_6_W_LASER) {
@@ -258,6 +279,7 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   return E_SUCCESS;
 }
 
+// 检测并关闭激光
 void ToolHeadLaser::TurnoffLaserIfNeeded() {
   bool is_disable_laser = (laser_status_ == LASER_WAIT_DISABLE) && (++laser_tick_ > LASER_DISABLE_DELAY);
 
@@ -277,6 +299,7 @@ void ToolHeadLaser::TurnoffLaserIfNeeded() {
   }
 }
 
+// 设置空气泵开关
 bool ToolHeadLaser::SetAirPumpSwitch(bool onoff, bool output_log) {
   if (output_log)
     LOG_I("set air pump switch: %s\n", onoff ? "open" : "close");
@@ -284,6 +307,7 @@ bool ToolHeadLaser::SetAirPumpSwitch(bool onoff, bool output_log) {
   return air_pump_switch_;
 }
 
+// 设置弱光模式
 bool ToolHeadLaser::SetWeakLightOriginMode(bool mode) {
   if (MODULE_TOOLHEAD_LASER_20W == ModuleBase::toolhead() || MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead()) {
     weak_light_origin_mode_ = mode;
@@ -292,6 +316,7 @@ bool ToolHeadLaser::SetWeakLightOriginMode(bool mode) {
   return weak_light_origin_mode_;
 }
 
+// 打印激光头信息
 void ToolHeadLaser::PrintInfo(void) {
   if (laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
     float x_offset, y_offset;
@@ -312,17 +337,21 @@ void ToolHeadLaser::PrintInfo(void) {
   LOG_I("air_pump_switch_: %d\n", air_pump_switch_);
 }
 
+// 获取定时器 PWM 值
 uint16_t ToolHeadLaser::tim_pwm() {
   return TimGetPwm();
 }
+// 设置 PWM 值
 void ToolHeadLaser::tim_pwm(uint16_t pwm) {
   TimSetPwm(pwm);
 }
 
+// 打开激光
 void ToolHeadLaser::TurnOn() {
   if (state_ == TOOLHEAD_LASER_STATE_OFFLINE)
     return;
 
+  // 激光安全状态不对，则不允许开光
   if ((laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
       laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) && laser->security_status_ != 0) {
     return;
@@ -347,10 +376,12 @@ void ToolHeadLaser::TurnOn() {
 
 }
 
+// 设置激光PWM占空比
 void ToolHeadLaser::PwmCtrlDirectly(uint8_t duty) {
   tim_pwm(duty);
 }
 
+// 关闭激光
 void ToolHeadLaser::TurnOff() {
   if (state_ == TOOLHEAD_LASER_STATE_OFFLINE)
     return;
@@ -368,6 +399,7 @@ void ToolHeadLaser::TurnOff() {
   tim_pwm(0);
 }
 
+// 设置激光功率
 void ToolHeadLaser::SetOutput(float power, bool is_map) {
   if ((laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
       laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) && laser->security_status_ != 0) {
@@ -378,6 +410,7 @@ void ToolHeadLaser::SetOutput(float power, bool is_map) {
   TurnOn();
 }
 
+// 激光功率转换为目标 PWM 占空比
 uint16_t ToolHeadLaser::PowerConversionPwm(float power) {
   int   integer;
   float decimal;
@@ -393,6 +426,7 @@ uint16_t ToolHeadLaser::PowerConversionPwm(float power) {
 
 
 
+// 设置激光功率
 void ToolHeadLaser::SetPower(float power, bool is_map) {
   if (state_ == TOOLHEAD_LASER_STATE_OFFLINE)
     return;
@@ -405,6 +439,7 @@ void ToolHeadLaser::SetPower(float power, bool is_map) {
     power_pwm_ = PowerConversionPwm(power);
   }
   else {
+    // 按占空比直接输出
     power_pwm_ = (uint16_t)(power * 255.0 / 100.0);
     LIMIT(power_pwm_, 0, 255);
   }
@@ -416,6 +451,7 @@ void ToolHeadLaser::SetPower(float power, bool is_map) {
 }
 
 
+// 设置激光功率最高限制，并按最高限制功率输出
 void ToolHeadLaser::SetPowerLimit(float limit) {
 
   if (limit > TOOLHEAD_LASER_POWER_NORMAL_LIMIT)
@@ -432,6 +468,7 @@ void ToolHeadLaser::SetPowerLimit(float limit) {
     TurnOn();
 }
 
+// 设置风扇功率（即转速）
 void ToolHeadLaser::SetFanPower(uint8_t power, bool update_fan_sta) {
   CanStdMesgCmd_t cmd;
   uint8_t         buffer[2];
@@ -451,6 +488,7 @@ void ToolHeadLaser::SetFanPower(uint8_t power, bool update_fan_sta) {
   canhost.SendStdCmd(cmd);
 }
 
+// 检测风扇转速
 void ToolHeadLaser::CheckFan(uint16_t pwm) {
   switch (fan_state_) {
   case TOOLHEAD_LASER_FAN_STATE_OPEN:
@@ -476,6 +514,8 @@ void ToolHeadLaser::CheckFan(uint16_t pwm) {
   }
 }
 
+// 尝试关闭风扇
+// 即检测并延时关闭风扇
 void ToolHeadLaser::TryCloseFan() {
   if (state_ == TOOLHEAD_LASER_STATE_OFFLINE)
     return;
@@ -492,6 +532,7 @@ void ToolHeadLaser::TryCloseFan() {
   }
 }
 
+// 设置红十字光状态
 ErrCode ToolHeadLaser::SetCrossLightCAN(bool sw) {
   CanStdFuncCmd_t cmd;
   uint8_t buffer[1];
@@ -506,6 +547,7 @@ ErrCode ToolHeadLaser::SetCrossLightCAN(bool sw) {
   return canhost.SendStdCmd(cmd);
 }
 
+// 获取红十字光状态
 ErrCode ToolHeadLaser::GetCrossLightCAN(bool &sw) {
   CanStdFuncCmd_t cmd;
 
@@ -531,6 +573,7 @@ ErrCode ToolHeadLaser::GetCrossLightCAN(bool &sw) {
   }
 }
 
+// 设置火焰传感器灵敏度
 ErrCode ToolHeadLaser::SetFireSensorSensitivityCAN(uint16 sen) {
   CanStdFuncCmd_t cmd;
   uint8_t buffer[8];
@@ -549,6 +592,7 @@ ErrCode ToolHeadLaser::SetFireSensorSensitivityCAN(uint16 sen) {
   return canhost.SendStdCmd(cmd);
 }
 
+// 获取火焰传感器灵敏度
 ErrCode ToolHeadLaser::GetFireSensorSensitivityCAN(uint16 &sen) {
   CanStdFuncCmd_t cmd;
 
@@ -574,6 +618,7 @@ ErrCode ToolHeadLaser::GetFireSensorSensitivityCAN(uint16 &sen) {
   }
 }
 
+// 设置火焰传感器上报时间间隔
 ErrCode ToolHeadLaser::SetFireSensorReportTime(uint16 itv) {
   CanStdFuncCmd_t cmd;
   uint8_t buffer[2];
@@ -589,6 +634,7 @@ ErrCode ToolHeadLaser::SetFireSensorReportTime(uint16 itv) {
   return canhost.SendStdCmd(cmd);
 }
 
+// 设置火焰红十字光偏移量
 ErrCode ToolHeadLaser::SetCrossLightOffsetCAN(float x, float y) {
   CanStdFuncCmd_t cmd;
   uint8_t buffer[8];
@@ -605,6 +651,7 @@ ErrCode ToolHeadLaser::SetCrossLightOffsetCAN(float x, float y) {
 }
 
 
+// 获取红十字光偏移量
 ErrCode ToolHeadLaser::GetCrossLightOffsetCAN(float &x, float &y) {
   CanStdFuncCmd_t cmd;
 
@@ -635,6 +682,7 @@ ErrCode ToolHeadLaser::GetCrossLightOffsetCAN(float &x, float &y) {
     return E_SUCCESS;
 }
 
+// 检测红十字光偏移量
 ErrCode ToolHeadLaser::CheckCrossLightOffset(float x_offset, float y_offset) {
   // TODO: use of more rigorous validity checks
   if ((x_offset == INVALID_OFFSET || y_offset == INVALID_OFFSET))
@@ -643,6 +691,7 @@ ErrCode ToolHeadLaser::CheckCrossLightOffset(float x_offset, float y_offset) {
 }
 
 
+// 加载焦距
 ErrCode ToolHeadLaser::LoadFocus() {
   CanStdMesgCmd_t cmd;
   uint8_t data[1];
@@ -658,6 +707,7 @@ ErrCode ToolHeadLaser::LoadFocus() {
 }
 
 
+// 获取焦距
 ErrCode ToolHeadLaser::GetFocus(SSTP_Event_t &event) {
   uint8_t  buff[5];
 
@@ -681,6 +731,7 @@ ErrCode ToolHeadLaser::GetFocus(SSTP_Event_t &event) {
 }
 
 
+// 设置焦距
 ErrCode ToolHeadLaser::SetFocus(SSTP_Event_t &event) {
   ErrCode err = E_FAILURE;
 
@@ -731,6 +782,7 @@ ErrCode ToolHeadLaser::SetFocus(SSTP_Event_t &event) {
 }
 
 
+// 执行手动校准
 ErrCode ToolHeadLaser::DoManualFocusing(SSTP_Event_t &event) {
   ErrCode err = E_FAILURE;
 
@@ -783,6 +835,7 @@ out:
 }
 
 
+// 执行自动校准
 ErrCode ToolHeadLaser::DoAutoFocusing(SSTP_Event_t &event) {
   ErrCode err = E_FAILURE;
 
@@ -887,6 +940,7 @@ out:
 
 
 
+// 获取 BT 信息
 /**
  * ReadBlueToothName:Read BT Name
  * para Name:The pointer to the Name buffer
@@ -940,6 +994,7 @@ out:
 }
 
 
+// 设置 BT 名称
 /**
  * SetBluetoothName:Set BT name
  * para Name:The name of the BT
@@ -992,6 +1047,7 @@ out:
 }
 
 
+// 设置摄像头 BT 名称
 ErrCode ToolHeadLaser::SetCameraBtName(SSTP_Event_t &event) {
   ErrCode err = E_FAILURE;
 
@@ -1014,6 +1070,7 @@ ErrCode ToolHeadLaser::SetCameraBtName(SSTP_Event_t &event) {
 }
 
 
+// 获取摄像头BY 名称
 ErrCode ToolHeadLaser::GetCameraBtName(SSTP_Event_t &event) {
   uint8_t buffer[40] = {0};
   ErrCode ret;
@@ -1050,6 +1107,7 @@ ErrCode ToolHeadLaser::GetCameraBtName(SSTP_Event_t &event) {
 }
 
 
+// 获取摄像头 MAC 信息
 ErrCode ToolHeadLaser::GetCameraBtMAC(SSTP_Event_t &event) {
   uint8_t buffer[16] = {0};
   ErrCode ret;
@@ -1090,6 +1148,7 @@ ErrCode ToolHeadLaser::GetCameraBtMAC(SSTP_Event_t &event) {
  * ReadBlueToothName:Read BT versions
  * return:0 for read success, 1 for unname, 2 for timeout
  */
+// 获取摄像头 BT 版本号
 ErrCode ToolHeadLaser::ReadBluetoothVer() {
   uint8_t  buff[72];
   uint16_t size;
@@ -1115,6 +1174,8 @@ ErrCode ToolHeadLaser::ReadBluetoothVer() {
  * SetCameraLight:set camera light status
  * para state:1-open 0-close
  */
+
+// 设置摄像头灯状态
 void ToolHeadLaser::SetCameraLight(uint8_t state) {
   SSTP_Event_t  event = {M_SET_CAMERA_LIGHT, 0, 0, NULL};
   uint8_t buff[1];
@@ -1131,6 +1192,7 @@ void ToolHeadLaser::SetCameraLight(uint8_t state) {
   LOG_I("set Laser Camera light:%d!\n", state);
 }
 
+// 设置自动对焦辅助灯状态
 ErrCode ToolHeadLaser::SetAutoFocusLight(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[1];
@@ -1176,6 +1238,7 @@ ErrCode ToolHeadLaser::SetAutoFocusLight(SSTP_Event_t &event) {
   return hmi.Send(event_hmi);
 }
 
+// 获取激光安全状态
 ErrCode ToolHeadLaser::GetSecurityStatus(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
 
@@ -1185,6 +1248,7 @@ ErrCode ToolHeadLaser::GetSecurityStatus(SSTP_Event_t &event) {
   return canhost.SendStdCmd(cmd);
 }
 
+// 发送激光安全状态
 ErrCode ToolHeadLaser::SendSecurityStatus() {
   SSTP_Event_t event = {EID_SYS_CTRL_ACK, SYSCTL_OPC_SECURITY_STATUS};
   uint8_t buff[7];
@@ -1203,6 +1267,8 @@ ErrCode ToolHeadLaser::SendSecurityStatus() {
   return hmi.Send(event);
 }
 
+// 发送暂停状态
+// 未使用接口
 ErrCode ToolHeadLaser::SendPauseStatus() {
   SSTP_Event_t event = {EID_SYS_CTRL_ACK, SYSCTL_OPC_PAUSE};
 
@@ -1212,6 +1278,7 @@ ErrCode ToolHeadLaser::SendPauseStatus() {
   return hmi.Send(event);
 }
 
+// 设置在线 ID
 ErrCode ToolHeadLaser::SetOnlineSyncId(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[5];
@@ -1235,6 +1302,7 @@ ErrCode ToolHeadLaser::SetOnlineSyncId(SSTP_Event_t &event) {
   return hmi.Send(event_hmi);
 }
 
+// 获取在线 ID 
 ErrCode ToolHeadLaser::GetOnlineSyncId(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[1];
@@ -1268,6 +1336,7 @@ ErrCode ToolHeadLaser::GetOnlineSyncId(SSTP_Event_t &event) {
   return E_SUCCESS;
 }
 
+// 设置保护温度
 ErrCode ToolHeadLaser::SetProtectTemp(SSTP_Event_t &event) {
   CanStdFuncCmd_t cmd;
   int8_t can_buffer[2];
@@ -1281,6 +1350,7 @@ ErrCode ToolHeadLaser::SetProtectTemp(SSTP_Event_t &event) {
   return canhost.SendStdCmd(cmd);
 }
 
+// 设置激光总电源
 ErrCode ToolHeadLaser::LaserControl(uint8_t state) {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[1];
@@ -1299,6 +1369,7 @@ ErrCode ToolHeadLaser::LaserControl(uint8_t state) {
   return E_SUCCESS;
 }
 
+// 设置激光支路电源
 ErrCode ToolHeadLaser::LaserBranchCtrl(bool onoff) {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[8];
@@ -1320,6 +1391,7 @@ ErrCode ToolHeadLaser::LaserBranchCtrl(bool onoff) {
   return E_SUCCESS;
 }
 
+// 获取硬件版本号
 ErrCode ToolHeadLaser::LaserGetHWVersion() {
   CanStdFuncCmd_t cmd;
   uint8_t buff[1] = {0};
@@ -1343,6 +1415,7 @@ ErrCode ToolHeadLaser::LaserGetHWVersion() {
   return E_SUCCESS;
 }
 
+// 设置红十字光开关状态
 ErrCode ToolHeadLaser::SetCrossLight(SSTP_Event_t &event) {
   uint8_t buff[1];
 
@@ -1361,6 +1434,7 @@ ErrCode ToolHeadLaser::SetCrossLight(SSTP_Event_t &event) {
   return hmi.Send(event_hmi);
 }
 
+// 获取红十字光开关状态
 ErrCode ToolHeadLaser::GetCrossLight(SSTP_Event_t &event) {
   bool sw;
   uint8_t buff[2];
@@ -1374,6 +1448,7 @@ ErrCode ToolHeadLaser::GetCrossLight(SSTP_Event_t &event) {
   return hmi.Send(event_tmp);
 }
 
+// 设置火焰传感器灵敏度
 ErrCode ToolHeadLaser::SetFireSensorSensitivity(SSTP_Event_t &event) {
   uint8_t buff[1];
 
@@ -1392,6 +1467,7 @@ ErrCode ToolHeadLaser::SetFireSensorSensitivity(SSTP_Event_t &event) {
   return hmi.Send(event_hmi);
 }
 
+// 获取火焰传感器灵敏度
 ErrCode ToolHeadLaser::GetFireSensorSensitivity(SSTP_Event_t &event) {
   uint16_t fss;
   uint8_t buff[8];
@@ -1406,6 +1482,7 @@ ErrCode ToolHeadLaser::GetFireSensorSensitivity(SSTP_Event_t &event) {
   return hmi.Send(event_tmp);
 }
 
+// 设置火焰传感器上报时间间隔
 ErrCode ToolHeadLaser::SetFireSensorReportTime(SSTP_Event_t &event) {
   uint8_t buff[1];
 
@@ -1423,6 +1500,7 @@ ErrCode ToolHeadLaser::SetFireSensorReportTime(SSTP_Event_t &event) {
   return hmi.Send(event_hmi);
 }
 
+// 设置红十字光偏移量
 ErrCode ToolHeadLaser::SetCrosslightOffset(SSTP_Event_t &event) {
   uint8_t buff[1];
 
@@ -1445,6 +1523,7 @@ ErrCode ToolHeadLaser::SetCrosslightOffset(SSTP_Event_t &event) {
   return hmi.Send(event_hmi);
 }
 
+// 获取十字光偏移量
 ErrCode ToolHeadLaser::GetCrosslightOffset(SSTP_Event_t &event) {
   float fx, fy;
   uint8_t buff[20];
@@ -1494,6 +1573,7 @@ ErrCode ToolHeadLaser::SetWeakLightOriginWork(SSTP_Event_t &event) {
   return hmi.Send(event_tmp);
 }
 
+// 推送激光安全状态
 void ToolHeadLaser::TellSecurityStatus() {
   SendSecurityStatus();
   // SERIAL_ECHO("Laser security state: 0x");
@@ -1504,6 +1584,7 @@ void ToolHeadLaser::TellSecurityStatus() {
           laser->laser_temperature_, laser->imu_temperature_, laser->roll_, laser->pitch_, laser->pwm_pin_pulldown_state_, laser->pwm_pin_pullup_state_);
 }
 
+// 获取 PWM 引脚状态
 uint8_t ToolHeadLaser::LaserGetPwmPinState() {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[1] = {0};
@@ -1519,6 +1600,7 @@ uint8_t ToolHeadLaser::LaserGetPwmPinState() {
   return cmd.data[0];
 }
 
+// 确认 PWM 引脚状态 OK
 void ToolHeadLaser::LaserConfirmPinState() {
   CanStdFuncCmd_t cmd;
   uint8_t can_buffer[1] = {0};
@@ -1530,6 +1612,7 @@ void ToolHeadLaser::LaserConfirmPinState() {
   canhost.SendStdCmd(cmd);
 }
 
+// 例行程序
 void ToolHeadLaser::Process() {
   if (mac_index_ == MODULE_MAC_INDEX_INVALID)
     return;
@@ -1539,9 +1622,12 @@ void ToolHeadLaser::Process() {
 
   if (laser->device_id_ == MODULE_DEVICE_ID_10W_LASER || laser->device_id_ == MODULE_DEVICE_ID_20W_LASER || \
       laser->device_id_ == MODULE_DEVICE_ID_40W_LASER) {
+    // 检测 PWM 引脚物理连接
     if (laser_pwm_pin_checked_ == false) {
+      // 拉高
       PwmCtrlDirectly(255);
       pwm_pin_pulldown_state_ = LaserGetPwmPinState();
+      // 拉低
       PwmCtrlDirectly(0);
       pwm_pin_pullup_state_ = LaserGetPwmPinState();
       if (pwm_pin_pulldown_state_ == 0 && pwm_pin_pullup_state_ == 1) {
@@ -1550,23 +1636,28 @@ void ToolHeadLaser::Process() {
       laser_pwm_pin_checked_ = true;
     }
 
+    // 推送激光安全状态
     if (need_to_tell_hmi_) {
       need_to_tell_hmi_ = false;
       TellSecurityStatus();
     }
 
+    // 检测并关闭激光
     TurnoffLaserIfNeeded();
   }
 
+  // 检测并关闭风扇
   TryCloseFan();
 }
 
 
+// 设置内联激光失能
 void ToolHeadLaser::InlineDisable() {
   planner.laser_inline.status.isEnabled = false;
 }
 
 
+// 设置内联激光功率
 void ToolHeadLaser::SetOutputInline(float power) {
   uint16_t power_pwm;
   power_pwm = PowerConversionPwm(power);
@@ -1574,6 +1665,7 @@ void ToolHeadLaser::SetOutputInline(float power) {
   SetOutputInline(power_pwm, false);
 }
 
+// 设置内联激光功率
 void ToolHeadLaser::SetOutputInline(uint16_t power_pwm, bool is_sync_power) {
   CheckFan(power_pwm);
   planner.laser_inline.power = power_pwm;
@@ -1594,12 +1686,15 @@ void ToolHeadLaser::SetOutputInline(uint16_t power_pwm, bool is_sync_power) {
   }
 }
 
+// 更新内联功率
 void ToolHeadLaser::UpdateInlinePower(uint16_t power_pwm, float sync_power) {
   planner.laser_inline.power = power_pwm;
   planner.laser_inline.sync_power = sync_power;
 }
 
+// 开启激光
 void ToolHeadLaser::TurnOn_ISR(uint16_t power_pwm, bool is_sync_power, float power) {
+  // 功率限制
   if (power_pwm > power_limit_pwm_)
     power_pwm = power_limit_pwm_;
 
@@ -1613,5 +1708,6 @@ void ToolHeadLaser::TurnOn_ISR(uint16_t power_pwm, bool is_sync_power, float pow
   else
     state_ = TOOLHEAD_LASER_STATE_OFF;
 
+  // 定时器 PWM 方式更改激光功率
   TimSetPwm(power_pwm);
 }

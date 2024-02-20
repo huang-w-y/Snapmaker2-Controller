@@ -188,6 +188,8 @@ out:
 }
 
 
+// 初始化 8P口 模组
+// 也就是通过同步通信方式获取 8P 口相关模组的相关引脚 拉高拉低后的状态
 ErrCode ModuleBase::InitModule8p(MAC_t &mac, int dir_pin, uint8_t index) {
   CanExtCmd_t cmd;
   uint8_t     buffer[16];
