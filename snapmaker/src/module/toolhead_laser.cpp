@@ -196,6 +196,15 @@ static void CallbackAckSetWeakLightPower(CanStdDataFrame_t &cmd) {
 }
 
 
+static void CallbackAckReportTecWorkTime(CanStdDataFrame_t &cmd) {
+  LOG_I("\r\nTEC_TIME=\t%d\tLD=\t%f\tCasing=\t%f\r\n",
+    (cmd.data[0] << 24) | (cmd.data[1] << 16) | (cmd.data[2] << 8) | (cmd.data[3] << 0),
+    (float)(   ((cmd.data[4] << 8) | (cmd.data[5] << 0))   / 10.0),
+    (float)(   ((cmd.data[6] << 8) | (cmd.data[7] << 0))   / 10.0)
+  );
+  
+}
+
 
 ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
   ErrCode ret;
@@ -263,6 +272,9 @@ ErrCode ToolHeadLaser::Init(MAC_t &mac, uint8_t mac_index) {
     }
     else if (function.id == MODULE_FUNC_SET_LASER_WEAK_POWER) {
       message_id[i] = canhost.RegisterFunction(function, CallbackAckSetWeakLightPower);
+    }
+    else if (function.id == MODULE_FUNC_TEST_SET_REPORT_TEC_WORK_TIME) {
+      message_id[i] = canhost.RegisterFunction(function, CallbackAckReportTecWorkTime);
     }
     else {
       message_id[i] = canhost.RegisterFunction(function, NULL);
@@ -1940,6 +1952,51 @@ void ToolHeadLaser::show_important_info_1(void) {
     }
   }
 }
+
+  // MODULE_FUNC_TEST_SET_TEC_WORK_FLAG = 76,
+  // MODULE_FUNC_TEST_GET_LD_AND_CASING_TEMP = 77,
+  // MODULE_FUNC_TEST_SET_TEC_DEST_TEMP = 78,
+  // MODULE_FUNC_TEST_SET_REPORT_TEC_WORK_TIME = 79,
+
+ErrCode ToolHeadLaser::LaserTestSetTecWorkFlag(uint8_t flag) {
+  CanStdFuncCmd_t cmd;
+  uint8_t can_buffer[1] = {0};
+
+  can_buffer[0] = !!flag;
+
+  cmd.id        = MODULE_FUNC_TEST_SET_TEC_WORK_FLAG;
+  cmd.data      = can_buffer;
+  cmd.length    = 1;
+
+  return canhost.SendStdCmd(cmd);
+}
+
+ErrCode ToolHeadLaser::LaserTestSetTecDestTemp(int16_t temp) {
+  CanStdFuncCmd_t cmd;
+  ErrCode ret = E_FAILURE;
+  uint8_t can_buffer[2] = {0};
+
+  can_buffer[0] = (temp >> 8) & 0x00FF;
+  can_buffer[1] = (temp >> 0) & 0x00FF;
+
+  cmd.id        = MODULE_FUNC_TEST_SET_TEC_DEST_TEMP;
+  cmd.data      = can_buffer;
+  cmd.length    = 2;
+
+  ret = canhost.SendStdCmdSync(cmd, 200);
+  if (E_SUCCESS != ret) {
+    LOG_E("failed to SetTecDestTemp! ret: %u\n", ret);
+  }
+  else {
+    LOG_I("\r\n Now, dest TEC = %d \r\n", (int16_t)(cmd.data[0] << 8 | cmd.data[1]));
+  }
+
+  return ret;
+}
+
+
+
+
 
 
 

@@ -179,6 +179,22 @@ void GcodeSuite::M2000() {
     break;
 
 
+    case 29: {
+      uint8_t flag = (uint8_t)(g + 0.001);
+      if (laser->LaserTestSetTecWorkFlag(flag) != E_SUCCESS) {
+        LOG_E("err\n");
+      }
+    }
+    break;
+
+    case 30: {
+      int16_t temp = (int16_t)(g + 0.001);
+      if (laser->LaserTestSetTecDestTemp(temp) != E_SUCCESS) {
+        LOG_E("err\n");
+      }
+    }
+    break;
+
     default:
     break;
   }

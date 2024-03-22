@@ -210,6 +210,13 @@ class ToolHeadLaser: public ModuleBase {
     ErrCode SetWeakLightOriginWork(SSTP_Event_t &event);
     ErrCode GetWeakLightPower(SSTP_Event_t &event);
     ErrCode SetWeakLightPower(SSTP_Event_t &event);
+    ErrCode LaserTestSetTecWorkFlag(uint8_t flag);
+    ErrCode LaserTestSetTecDestTemp(int16_t temp);
+
+    // void LaserTestSetTecWorkFlag(bool flag);
+    // void LaserTestGetLdAndCasingTemp(void);
+    // void LaserTestSetTecDestTemp(uint8_t *data);
+    // void LaserTestReportTecWorkTime(void);
 
     void TellSecurityStatus();
     uint8_t LaserGetPwmPinState();
