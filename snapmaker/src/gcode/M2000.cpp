@@ -133,6 +133,33 @@ void GcodeSuite::M2000() {
       }
     }
     break;
+
+    // Set the SSID of the module
+    case 100: {
+      uint8_t buffer[8] = {0};
+      SSTP_Event_t event = {0};
+      uint32_t p = parser.ulongval('P', 0x20E02468);
+      uint32_t q = parser.ulongval('Q', 0x1234);
+      buffer[0] = (p >> 24) & 0xFF;
+      buffer[1] = (p >> 16) & 0xFF;
+      buffer[2] = (p >> 8) & 0xFF;
+      buffer[3] = (p >> 0) & 0xFF;
+      buffer[4] = (q >> 24) & 0xFF;
+      buffer[5] = (q >> 16) & 0xFF;
+      buffer[6] = (q >> 8) & 0xFF;
+      buffer[7] = (q >> 0) & 0xFF;
+      event.op_code = 2;
+      event.data = buffer;
+      event.length = 8;
+      event.id = 9;
+
+      LOG_I("Set the SSID of the module\r\n");
+      if(E_SUCCESS != laser->SetMAC(event)) {
+        LOG_E("Err\r\n");
+      }
+    }
+    break;
+  
   }
 
   switch (l) {

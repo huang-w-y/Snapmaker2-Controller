@@ -265,6 +265,7 @@ ErrCode ModuleBase::SetMAC(SSTP_Event_t &event) {
   cmd.data[3] = event.data[5];
   cmd.data[4] = event.data[6];
   cmd.data[5] = event.data[7];
+  cmd.length = 8;
 
   // error code to HMI
   event.data[0] = E_FAILURE;
