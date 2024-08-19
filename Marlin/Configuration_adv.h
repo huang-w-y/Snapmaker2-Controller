@@ -2357,6 +2357,7 @@
 #if ENABLED(FT_MOTION)
   #define FTM_DEFAULT_MODE            ftMotionMode_EI // Default mode of fixed time control. (Enums in ft_types.h)
   #define FTM_DEFAULT_DYNFREQ_MODE    dynFreqMode_DISABLED // Default mode of dynamic frequency calculation. (Enums in ft_types.h)
+  // （Hz）输入整形器使用的默认峰值频率
   #define FTM_SHAPING_DEFAULT_X_FREQ   35.0f      // (Hz) Default peak frequency used by input shapers
   #define FTM_SHAPING_DEFAULT_Y_FREQ   35.0f      // (Hz) Default peak frequency used by input shapers
   #define FTM_LINEAR_ADV_DEFAULT_ENA   true      // Default linear advance enable (true) or disable (false)
@@ -2380,7 +2381,9 @@
     #define FTM_BATCH_SIZE            100         // Custom Batch size for trajectory generation needed by Ulendo FBS
   #endif
 
+  // （Hz）轨迹生成的频率。（FTM_TS的倒数）
   #define FTM_FS                     1000         // (Hz) Frequency for trajectory generation. (Reciprocal of FTM_TS)
+  // （s） 轨迹生成的时间步长。（FTM_FS的倒数）
   #define FTM_TS                        0.001f    // (s) Time step for trajectory generation. (Reciprocal of FTM_FS)
 
   // These values may be configured to adjust the duration of loop().
@@ -2407,8 +2410,11 @@
   #define FTM_CTS_COMPARE_VAL (FTM_STEPS_PER_UNIT_TIME / 2)       // Comparison value used in interpolation algorithm
   #define FTM_MIN_TICKS ((STEPPER_TIMER_RATE) / (FTM_STEPPER_FS)) // Minimum stepper ticks between steps
 
+  // 最小整形频率
   #define FTM_MIN_SHAPE_FREQ           10         // Minimum shaping frequency
+  // 整形频率相关系数
   #define FTM_RATIO (FTM_FS / FTM_MIN_SHAPE_FREQ) // Factor for use in FTM_ZMAX. DON'T CHANGE.
+  // 整形函数的最大延迟（仅限偶数！）
   #define FTM_ZMAX (FTM_RATIO * 2)                // Maximum delays for shaping functions (even numbers only!)
                                                   // Calculate as:
                                                   //   ZV       : FTM_RATIO / 2

@@ -23,7 +23,9 @@
 
 #include "../core/types.h"
 
+// FT 控制模式
 typedef enum FXDTICtrlMode : uint8_t {
+  // 标准模式
   ftMotionMode_DISABLED   =  0, // Standard Motion
   ftMotionMode_ENABLED    =  1, // Time-Based Motion
   ftMotionMode_ZV         = 10, // Zero Vibration
@@ -36,12 +38,17 @@ typedef enum FXDTICtrlMode : uint8_t {
   ftMotionMode_MZV        = 17  // Mass-based Zero Vibration
 } ftMotionMode_t;
 
+// 动态频率模式
 enum dynFreqMode_t : uint8_t {
+  // 失能
   dynFreqMode_DISABLED   = 0,
+  // 基于Z轴的运动动态调整频率
   dynFreqMode_Z_BASED    = 1,
+  // 基于打印物体的质量或体积动态调整频率
   dynFreqMode_MASS_BASED = 2
 };
 
+// 检测是否 EI 模式
 #define IS_EI_MODE(N) WITHIN(N, ftMotionMode_EI, ftMotionMode_3HEI)
 
 typedef struct XYZEarray<float, FTM_WINDOW_SIZE> xyze_trajectory_t;

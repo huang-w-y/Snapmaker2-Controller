@@ -36,16 +36,23 @@
   #endif
 #endif
 
+// FT 配置
 typedef struct FTConfig {
+  // FT 模式：默认 EI
   ftMotionMode_t mode = FTM_DEFAULT_MODE;                 // Mode / active compensation mode configuration.
 
+  // 确认是否开启整形
   bool modeHasShaper() { return WITHIN(mode, 10U, 19U); }
 
   #if HAS_X_AXIS
+    // （Hz）输入整形器使用的峰值频率
     float baseFreq[1 + ENABLED(HAS_Y_AXIS)] =             // Base frequency. [Hz]
       { FTM_SHAPING_DEFAULT_X_FREQ OPTARG(HAS_Y_AXIS, FTM_SHAPING_DEFAULT_Y_FREQ) };
+
+    // 输入整形器使用的 Zeta 即 阻尼系数
     float zeta[1 + ENABLED(HAS_Y_AXIS)] =                 // Damping factor
         { FTM_SHAPING_ZETA_X OPTARG(HAS_Y_AXIS, FTM_SHAPING_ZETA_Y) };
+    // EI 输入整形器的振动公差，或者说 振动等级
     float vtol[1 + ENABLED(HAS_Y_AXIS)] =                 // Vibration Level
         { FTM_SHAPING_V_TOL_X OPTARG(HAS_Y_AXIS, FTM_SHAPING_V_TOL_Y) };
   #endif
@@ -54,23 +61,29 @@ typedef struct FTConfig {
     dynFreqMode_t dynFreqMode = FTM_DEFAULT_DYNFREQ_MODE; // Dynamic frequency mode configuration.
     float dynFreqK[1 + ENABLED(HAS_Y_AXIS)] = { 0.0f };   // Scaling / gain for dynamic frequency. [Hz/mm] or [Hz/g]
   #else
+    // 动态频率模式：默认失能
     static constexpr dynFreqMode_t dynFreqMode = dynFreqMode_DISABLED;
   #endif
 
   #if HAS_EXTRUDERS
+    // 预挤出使能标志
     bool linearAdvEna = FTM_LINEAR_ADV_DEFAULT_ENA;       // Linear advance enable configuration.
+    // 预挤出系数
     float linearAdvK = FTM_LINEAR_ADV_DEFAULT_K;          // Linear advance gain.
   #endif
 } ft_config_t;
 
+// FT类
 class FTMotion {
 
   public:
     // Public variables
+    // FT 配置
     static ft_config_t cfg;
     static bool busy;
     static bool mode_changed;
 
+    // 恢复默认配置
     static void set_defaults() {
       cfg.mode = FTM_DEFAULT_MODE;
 
@@ -182,8 +195,13 @@ class FTMotion {
     #if HAS_X_AXIS
 
       typedef struct AxisShaping {
+        // 数据点延迟向量。
         float d_zi[FTM_ZMAX] = { 0.0f };  // Data point delay vector.
+        // 整形增益矢量。
+        // 对应于增益
         float Ai[5];                      // Shaping gain vector.
+        // 整形时间索引向量。
+        // 对应于时滞？
         uint32_t Ni[5];                   // Shaping time index vector.
 
         void updateShapingN(const_float_t f, const_float_t df);
@@ -191,7 +209,9 @@ class FTMotion {
       } axis_shaping_t;
 
       typedef struct Shaping {
+        // 数据点延迟向量中的存储索引。
         uint32_t zi_idx,           // Index of storage in the data point delay vectors.
+        // 所选整形器的矢量长度。
                  max_i;            // Vector length for the selected shaper.
         axis_shaping_t x;
         #if HAS_Y_AXIS

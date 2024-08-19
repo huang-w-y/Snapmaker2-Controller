@@ -41,6 +41,8 @@ FTMotion ftMotion;
   static_assert(FTM_DEFAULT_MODE == ftMotionMode_3HEI, "ftMotionMode_3HEI requires at least one linear axis.");
   static_assert(FTM_DEFAULT_MODE == ftMotionMode_MZV, "ftMotionMode_MZV requires at least one linear axis.");
 #endif
+
+
 #if !HAS_DYNAMIC_FREQ_MM
   static_assert(FTM_DEFAULT_DYNFREQ_MODE != dynFreqMode_Z_BASED, "dynFreqMode_Z_BASED requires a Z axis.");
 #endif
@@ -67,47 +69,77 @@ bool FTMotion::sts_stepperBusy = false;         // The stepper buffer has items 
 // Private variables.
 
 // NOTE: These are sized for Ulendo FBS use.
+// 注意：这些尺寸适合Ulendo FBS使用。
+// 存储基于固定时间的轨迹
 xyze_trajectory_t    FTMotion::traj;            // = {0.0f} Storage for fixed-time-based trajectory.
+// 存储固定时间轨迹窗口
 xyze_trajectoryMod_t FTMotion::trajMod;         // = {0.0f} Storage for fixed time trajectory window.
 
+      // 指示 block 是否已经 ready
 bool FTMotion::blockProcRdy = false,            // Indicates a block is ready to be processed.
      FTMotion::blockProcRdy_z1 = false,         // Storage for the previous indicator.
+    //  指示当前 block 已完成处理。
      FTMotion::blockProcDn = false;             // Indicates current block is done being processed.
+    //  表示一批固定时间轨迹已经生成，现在可以在traj.x[]、y、z等向量的上半部分找到，并准备好进行后处理（如果适用的话），然后进行插值。
 bool FTMotion::batchRdy = false;                // Indicates a batch of the fixed time trajectory
                                                 //  has been generated, is now available in the upper -
                                                 //  half of traj.x[], y, z ... e vectors, and is ready to be
                                                 //  post processed, if applicable, then interpolated.
+  // 表示批处理已完成，正在进行后处理（如果适用），并准备转换为步骤命令。
 bool FTMotion::batchRdyForInterp = false;       // Indicates the batch is done being post processed,
                                                 //  if applicable, and is ready to be converted to step commands.
 bool FTMotion::runoutEna = false;               // True if runout of the block hasn't been done and is allowed.
+
+
 bool FTMotion::blockDataIsRunout = false;       // Indicates the last loaded block variables are for a runout.
 
 // Trapezoid data variables.
+// 梯形数据变量。
+            // 当前块的起始位置
 xyze_pos_t   FTMotion::startPosn,                     // (mm) Start position of block
+            // 上一个块的结束位置
              FTMotion::endPosn_prevBlock = { 0.0f };  // (mm) End position of previous block
+            //比率：各轴移动距离与总合成距离的比值
 xyze_float_t FTMotion::ratio;                         // (ratio) Axis move ratio of block
+      // 当前 block 的主要加速度
 float FTMotion::accel_P,                        // Acceleration prime of block. [mm/sec/sec]
+      // 当前 block 的主要减速度
       FTMotion::decel_P,                        // Deceleration prime of block. [mm/sec/sec]
+      // 当前 block 的主要速度
       FTMotion::F_P,                            // Feedrate prime of block. [mm/sec]
+      // 当前 block 的起始速度
       FTMotion::f_s,                            // Starting feedrate of block. [mm/sec]
+      // 对应于加速段与匀速段的交界点的位置
       FTMotion::s_1e,                           // Position after acceleration phase of block.
+      // 对应于匀速段与减速段的交界点的位置
       FTMotion::s_2e;                           // Position after acceleration and coasting phase of block.
 
+          // 加速阶段的数据点数量
 uint32_t FTMotion::N1,                          // Number of data points in the acceleration phase.
+          // 匀速阶段的数据点数量
          FTMotion::N2,                          // Number of data points in the coasting phase.
+        //  减速阶段的数据点数量
          FTMotion::N3;                          // Number of data points in the deceleration phase.
 
+// 从 block 中生成的数据点总数
 uint32_t FTMotion::max_intervals;               // Total number of data points that will be generated from block.
 
 // Make vector variables.
+          // 整个 block 的固定时间轨迹生成的索引点。
+          // 也就是当前 block 要生成的数据点的索引
 uint32_t FTMotion::makeVector_idx = 0,          // Index of fixed time trajectory generation of the overall block.
+          // 存储上述先前计算的索引。
          FTMotion::makeVector_idx_z1 = 0,       // Storage for the previously calculated index above.
+        //  批次内固定时间轨迹生成的索引。
          FTMotion::makeVector_batchIdx = 0;     // Index of fixed time trajectory generation within the batch.
 
+// 步数累加器。
 // Interpolation variables.
 xyze_long_t FTMotion::steps = { 0 };            // Step count accumulator.
 
+// 正在插值的当前数据点的索引。
 uint32_t FTMotion::interpIdx = 0,               // Index of current data point being interpolated.
+          // 存储上述先前计算的索引。
          FTMotion::interpIdx_z1 = 0;            // Storage for the previously calculated index above.
 
 // Shaping variables.
@@ -126,6 +158,7 @@ uint32_t FTMotion::interpIdx = 0,               // Index of current data point b
 
 #if HAS_EXTRUDERS
   // Linear advance variables.
+  // （ms）原生挤出机位置的单位延迟。
   float FTMotion::e_raw_z1 = 0.0f;        // (ms) Unit delay of raw extruder position.
   float FTMotion::e_advanced_z1 = 0.0f;   // (ms) Unit delay of advanced extruder position.
 #endif
@@ -139,6 +172,7 @@ constexpr uint32_t last_batchIdx = (FTM_WINDOW_SIZE) - (FTM_BATCH_SIZE);
 // Public functions.
 
 // Sets controller states to begin processing a block.
+// 设置控制器状态,以开始处理 block。
 void FTMotion::startBlockProc() {
   blockProcRdy = true;
   blockProcDn = false;
@@ -146,6 +180,7 @@ void FTMotion::startBlockProc() {
 }
 
 // Move any free data points to the stepper buffer even if a full batch isn't ready.
+// 即使整批数据尚未准备就绪，也要将所有自由数据点移至步进器缓冲区。
 void FTMotion::runoutBlock() {
 
   if (!runoutEna) return;
@@ -168,6 +203,7 @@ void FTMotion::runoutBlock() {
   runoutEna = blockProcDn = false;
 }
 
+// 添加同步命令
 void FTMotion::addSyncCommand(block_t *blk) {
   if (blk->sync_e) {
     stepperCmdBuff[stepperCmdBuff_produceIdx] = _BV(FT_BIT_SYNC_POS_E);
@@ -188,12 +224,15 @@ void FTMotion::addSyncCommand(block_t *blk) {
     stepperCmdBuff_produceIdx = 0;
 }
 
+// 主控制器
 // Controller main, to be invoked from non-isr task.
 void FTMotion::loop() {
 
+  // 确保是 marlin 任务调用
   if (sm2_handle->marlin != xTaskGetCurrentTaskHandle())
     return;
 
+  // 确认是否开启了振动抑制
   if (!cfg.mode) return;
 
   // Handle block abort with the following sequence:
@@ -201,9 +240,18 @@ void FTMotion::loop() {
   // 2. Drain the motion buffer, stop processing until they are emptied.
   // 3. Reset all the states / memory.
   // 4. Signal ready for new block.
+  //按以下顺序处理块中止：
+  // 1.在 stepper 的 ISR 中，清除相关命令。
+  // 2.排空运动缓冲区，停止处理，直到它们被清空。
+  // 3.重置所有状态/内存。
+  // 4.信号已准备好迎接新的区块。
+
+  // 中止块 -- 如急停开关触发、快速停止作业
   if (stepper.abort_current_block) {
     portDISABLE_INTERRUPTS();
+    // 重置相关变量
     reset();
+    // 设置排队以寻找下一个街区。
     blockProcDn = true;                   // Set queueing to look for next block.
     stepper.abort_current_block = false;
     planner.new_block = 0;
@@ -211,6 +259,7 @@ void FTMotion::loop() {
     portENABLE_INTERRUPTS();
   }
 
+  // 快速停止中也如上述中止操作
   if (quickstop.isInStopping()) {
     portDISABLE_INTERRUPTS();
     reset();
@@ -219,6 +268,7 @@ void FTMotion::loop() {
     portENABLE_INTERRUPTS();
   }
 
+  // 规划器中的 block 还没准备好
   // Planner processing and block conversion.
   if (!blockProcRdy) {
     if (planner.new_block) {
@@ -228,6 +278,7 @@ void FTMotion::loop() {
     stepper.ftMotion_blockQueueUpdate();
   }
 
+  // 如果规划器中的 block 已经准备好了
   if (blockProcRdy) {
     if (!blockProcRdy_z1) { // One-shot.
       if (!blockDataIsRunout) loadBlockData(stepper.current_block);
@@ -298,6 +349,9 @@ void FTMotion::loop() {
   // Refresh the gains used by shaping functions.
   // To be called on init or mode or zeta change.
 
+  //刷新整形函数所使用的增益。
+  //在初始化阶段或者参数修改是调用
+  // 计算出增益
   void FTMotion::Shaping::updateShapingA(float zeta[]/*=cfg.zeta*/, float vtol[]/*=cfg.vtol*/) {
 
     const float Kx = exp(-zeta[0] * M_PI / sqrt(1.0f - sq(zeta[0]))),
@@ -305,13 +359,17 @@ void FTMotion::loop() {
                 Kx2 = sq(Kx),
                 Ky2 = sq(Ky);
 
+    // FT 模式
     switch (cfg.mode) {
 
+      // ZV 应是最简单的整形
       case ftMotionMode_ZV:
         max_i = 1U;
+        // 增益
         x.Ai[0] = 1.0f / (1.0f + Kx);
         x.Ai[1] = x.Ai[0] * Kx;
 
+        // 增益
         y.Ai[0] = 1.0f / (1.0f + Ky);
         y.Ai[1] = y.Ai[0] * Ky;
         break;
@@ -355,6 +413,7 @@ void FTMotion::loop() {
         y.Ai[4] = y.Ai[0] * sq(Ky2);
         break;
 
+      // 默认 EI
       case ftMotionMode_EI: {
         max_i = 2U;
         x.Ai[0] = 0.25f * (1.0f + vtol[0]);
@@ -450,9 +509,13 @@ void FTMotion::loop() {
 
   // Refresh the indices used by shaping functions.
   // To be called when frequencies change.
+  // 刷新整形函数使用的索引。
+  //当频率变化时被调用。 
 
+  // 更新时滞相关系数
   void FTMotion::AxisShaping::updateShapingN(const_float_t f, const_float_t df) {
     // Protections omitted for DBZ and for index exceeding array length.
+    // 省略了对DBZ和索引超过数组长度的保护。
     switch (cfg.mode) {
       case ftMotionMode_ZV:
         Ni[1] = round((0.5f / f / df) * (FTM_FS));
@@ -483,6 +546,7 @@ void FTMotion::loop() {
     }
   }
 
+  // xf 基本频率
   void FTMotion::updateShapingN(const_float_t xf OPTARG(HAS_Y_AXIS, const_float_t yf), float zeta[]/*=cfg.zeta*/) {
     const float xdf = sqrt(1.0f - sq(zeta[0]));
     shaping.x.updateShapingN(xf, xdf);
@@ -496,10 +560,12 @@ void FTMotion::loop() {
 #endif // HAS_X_AXIS
 
 // Reset all trajectory processing variables.
+// 重置所有轨迹处理变量。
 void FTMotion::reset() {
 
   stepperCmdBuff_produceIdx = stepperCmdBuff_consumeIdx = 0;
 
+  // 重置轨道
   traj.reset();
   trajMod.reset();
 
@@ -531,6 +597,7 @@ int32_t FTMotion::stepperCmdBuffItems() {
   return (udiff < 0) ? udiff + (FTM_STEPPERCMD_BUFF_SIZE) : udiff;
 }
 
+// 启动前初始化存储变量。
 // Initializes storage variables before startup.
 void FTMotion::init() {
   shaping.max_i = 0;
@@ -553,14 +620,19 @@ void FTMotion::init() {
 }
 
 // Loads / converts block data from planner to fixed-time control variables.
+// 将 block 数据从 planner 中加载/转换为固定时间控制变量。
+// 这里会计算这个 block 对应的加速段、减速段、匀速段的速度、加速度、减速度、数据点数
 void FTMotion::loadBlockData(block_t * const current_block) {
 
   const float totalLength = current_block->millimeters, // 原始移动长度
               oneOverLength = 1.0f / totalLength;
 
+  // 当前 block 的起始位置肯定等于上一个 block 的结束位置
   startPosn = endPosn_prevBlock;
 
+  // 移动数据
   xyze_pos_t moveDist = LOGICAL_AXIS_ARRAY(
+    // 步数 * 导程 * 方向 == 位移长度
     current_block->steps[E_AXIS] * planner.steps_to_mm[E_AXIS] * (TEST(current_block->direction_bits, E_AXIS) ? -1 : 1),
     current_block->steps[X_AXIS] * planner.steps_to_mm[X_AXIS] * (TEST(current_block->direction_bits, X_AXIS) ? -1 : 1),
     current_block->steps[Y_AXIS] * planner.steps_to_mm[Y_AXIS] * (TEST(current_block->direction_bits, Y_AXIS) ? -1 : 1),
@@ -575,10 +647,13 @@ void FTMotion::loadBlockData(block_t * const current_block) {
 
   ratio = moveDist * oneOverLength; // 算出各轴移动距离，与合成运动距离的比值，耦合方向，有正负号
 
+  // 每步移动的合成距离
   const float spm = totalLength / current_block->step_event_count;  // (steps/mm) Distance for each step 每步移动的距离，step_event_count是最长轴的步数
 
+  // 初始速度
   f_s = spm * current_block->initial_rate;              // (steps/s) Start feedrate 每步移动的距离，乘以1s发出的步数，那就是1s移动的距离，所以得到速度，initial_rate是初始的step rate
 
+  // 结束速度
   const float f_e = spm * current_block->final_rate;    // (steps/s) End feedrate
 
   /* Keep for comprehension
@@ -606,22 +681,28 @@ void FTMotion::loadBlockData(block_t * const current_block) {
   const float accel = current_block->acceleration,
               oneOverAccel = 1.0f / accel;
 
+  // 这一段是计算实际巡航速度、巡航阶段的时间的
+  // 计算方法可以用面积（积分）方法来推导
   float F_n = current_block->nominal_speed;
   const float ldiff = totalLength + 0.5f * oneOverAccel * (sq(f_s) + sq(f_e)); // 总距离减去 加速距离和减速距离 S - Sa - Sa
 
+  // 计算匀速阶段的时间
   float T2 = ldiff / F_n - oneOverAccel * F_n; // 巡航距离/巡航速度 - 巡航速度/加速度
   if (T2 < 0.0f) {
     T2 = 0.0f;
     F_n = SQRT(ldiff * accel);
   }
 
+  // 计算加减速阶段各自的时间
   const float T1 = (F_n - f_s) * oneOverAccel,
               T3 = (F_n - f_e) * oneOverAccel;
 
+  // 计算加速、匀速、减速阶段对应的数据点的数量
   N1 = CEIL(T1 * (FTM_FS));         // Accel datapoints based on Hz frequency // 加速时间要产生多少点轨迹，向上取整
   N2 = CEIL(T2 * (FTM_FS));         // Coast //
   N3 = CEIL(T3 * (FTM_FS));         // Decel
 
+  // 重新计算加速、匀速、减速阶段的时间
   const float T1_P = N1 * (FTM_TS), // (s) Accel datapoints x timestep resolution，将轨迹点数转为时间，此时是单点的整数倍
               T2_P = N2 * (FTM_TS), // (s) Coast
               T3_P = N3 * (FTM_TS); // (s) Decel
@@ -637,22 +718,30 @@ void FTMotion::loadBlockData(block_t * const current_block) {
    *  f_s * T1_P : (mm) Distance traveled during the accel phase
    *  f_e * T3_P : (mm) Distance traveled during the decel phase
    */
+    //   计算加速阶段结束时可达到的进给速度。
+    // totalLength是行驶的总距离，单位为毫米
+    // 使用面积法计算计算主要巡航速度
   F_P = (2.0f * totalLength - f_s * T1_P - f_e * T3_P) / (T1_P + 2.0f * T2_P + T3_P); // (mm/s) Feedrate at the end of the accel phase
 
+  // 主要加速度
   // Calculate the acceleration and deceleration rates
   accel_P = N1 ? ((F_P - f_s) / T1_P) : 0.0f;
 
+  // 主要减速度
   decel_P = (f_e - F_P) / T3_P;
 
   // Calculate the distance traveled during the accel phase
+  // 加速段结束的位置
   s_1e = f_s * T1_P + 0.5f * accel_P * sq(T1_P);
 
   // Calculate the distance traveled during the decel phase 这里应该是开始减速的位置点
   s_2e = s_1e + F_P * T2_P; // 加速位移+巡航位移
 
+  // 总数据点数
   // Accel + Coasting + Decel datapoints
   max_intervals = N1 + N2 + N3;
 
+  // 结束位置
   endPosn_prevBlock += moveDist; // 累计位置，这里需要注意float类型长度了
   // LOG_I("moveDist: X:%f, Y:%f, Z:%f, I:%f, E:%f\n", moveDist.x, moveDist.y, moveDist.z, moveDist.i, moveDist.e);
   // LOG_I("startPos: X:%f, Y:%f, Z:%f, I:%f, E:%f\n", startPosn.x, startPosn.y, startPosn.z, startPosn.i, startPosn.e);
@@ -662,28 +751,39 @@ void FTMotion::loadBlockData(block_t * const current_block) {
 }
 
 // Generate data points of the trajectory.
+// 生成轨迹的数据点。
 void FTMotion::makeVector() {
+  // 加速度 K 系数
   float accel_k = 0.0f;                                 // (mm/s^2) Acceleration K factor
+  // 自当前 block 开始以来的时间
   float tau = (makeVector_idx + 1) * (FTM_TS);          // (s) Time since start of block
   float dist = 0.0f;                                    // (mm) Distance traveled
 
+  // 这一段是计算出 目标位置、对应的加速度
+  // 加速阶段
   if (makeVector_idx < N1) {
     // Acceleration phase
+    // 目标位置 = V(起始) t + 1/2 at²
     dist = (f_s * tau) + (0.5f * accel_P * sq(tau));    // (mm) Distance traveled for acceleration phase since start of block //
     accel_k = accel_P;                                  // (mm/s^2) Acceleration K factor from Accel phase
   }
+  // 匀速阶段
   else if (makeVector_idx < (N1 + N2)) {
     // Coasting phase
+    // 目标位置 = 匀速段起始位置 +  速度 * 匀速段已走的 Δt
     dist = s_1e + F_P * (tau - N1 * (FTM_TS));          // (mm) Distance traveled for coasting phase since start of block
     //accel_k = 0.0f;
   }
+  // 减速阶段
   else {
     // Deceleration phase
+    // 目标位置 = 减速段起始位置 + vt + 1/2at²
     tau -= (N1 + N2) * (FTM_TS);                        // (s) Time since start of decel phase
     dist = s_2e + F_P * tau + 0.5f * decel_P * sq(tau); // (mm) Distance traveled for deceleration phase since start of block
     accel_k = decel_P;                                  // (mm/s^2) Acceleration K factor from Decel phase
   }
 
+  // 计算出各轴轨迹点所对应的坐标位置
   LOGICAL_AXIS_CODE(
     traj.e[makeVector_batchIdx] = startPosn.e + ratio.e * dist,
     traj.x[makeVector_batchIdx] = startPosn.x + ratio.x * dist,
@@ -701,6 +801,7 @@ void FTMotion::makeVector() {
   //   traj.z[makeVector_batchIdx], traj.i[makeVector_batchIdx], traj.e[makeVector_batchIdx]);
   // LOG_I("trajMod: X:%f, Y:%f, Z:%f, I:%f, E:%f\n", trajMod.x, trajMod.y, trajMod.z, trajMod.i, trajMod.e);
 
+  // 预挤出相关
   #if HAS_EXTRUDERS
     if (cfg.linearAdvEna) {
       float dedt_adj = (traj.e[makeVector_batchIdx] - e_raw_z1) * (FTM_FS);
@@ -714,6 +815,7 @@ void FTMotion::makeVector() {
 
   // Update shaping parameters if needed.
 
+  // 动态修改整形参数
   switch (cfg.dynFreqMode) {
 
     #if HAS_DYNAMIC_FREQ_MM
@@ -739,6 +841,7 @@ void FTMotion::makeVector() {
   }
 
   // Apply shaping if in mode.
+  // 如果处于模式，则应用整形。
   #if HAS_X_AXIS
     if (cfg.modeHasShaper()) {
       shaping.x.d_zi[shaping.zi_idx] = traj.x[makeVector_batchIdx];
@@ -766,7 +869,9 @@ void FTMotion::makeVector() {
   }
 
   // max_intervals 代表的是这段block的所有轨迹点数
+  // 如果当前 block 的所有轨迹数据点都已生成了
   if (++makeVector_idx == max_intervals) {
+    // 指示当前 block 已完成处理。
     blockProcDn = true;
     blockProcRdy = false;
     makeVector_idx = 0;
@@ -781,6 +886,7 @@ void FTMotion::makeVector() {
  */
 static void (*command_set[NUM_AXES TERN0(HAS_EXTRUDERS, +1)])(int32_t&, int32_t&, ft_command_t&, int32_t, int32_t);
 
+// 设置为正方向
 static void command_set_pos(int32_t &e, int32_t &s, ft_command_t &b, int32_t bd, int32_t bs) {
   if (e < FTM_CTS_COMPARE_VAL) return;
   s++;
@@ -789,6 +895,7 @@ static void command_set_pos(int32_t &e, int32_t &s, ft_command_t &b, int32_t bd,
 }
 
 // bit is set indicates direction is negative
+// 设置为负方向
 static void command_set_neg(int32_t &e, int32_t &s, ft_command_t &b, int32_t bd, int32_t bs) {
   if (e > -(FTM_CTS_COMPARE_VAL)) return;
   s--;
@@ -796,6 +903,7 @@ static void command_set_neg(int32_t &e, int32_t &s, ft_command_t &b, int32_t bd,
   e += FTM_STEPS_PER_UNIT_TIME;
 }
 
+// 将单个数据点插值到步进器命令。
 // Interpolates single data point to stepper commands.
 void FTMotion::convertToSteps(const uint32_t idx) {
   xyze_long_t err_P = { 0 };
@@ -841,6 +949,7 @@ void FTMotion::convertToSteps(const uint32_t idx) {
 
   for (uint32_t i = 0U; i < (FTM_STEPS_PER_UNIT_TIME); i++) {
 
+    // 将所有step/dir位初始化为0（默认为反向/负向运动）
     // Init all step/dir bits to 0 (defaulting to reverse/negative motion)
     stepperCmdBuff[stepperCmdBuff_produceIdx] = 0;
 
