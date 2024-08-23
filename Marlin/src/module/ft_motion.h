@@ -26,6 +26,7 @@
 
 #include "ft_types.h"
 
+// 无需动态调整频率
 #if HAS_X_AXIS && (HAS_Z_AXIS || HAS_EXTRUDERS)
   #define HAS_DYNAMIC_FREQ 0
   #if HAS_Z_AXIS
@@ -46,6 +47,7 @@ typedef struct FTConfig {
 
   #if HAS_X_AXIS
     // （Hz）输入整形器使用的峰值频率
+    // 对应于公式里的固有频率
     float baseFreq[1 + ENABLED(HAS_Y_AXIS)] =             // Base frequency. [Hz]
       { FTM_SHAPING_DEFAULT_X_FREQ OPTARG(HAS_Y_AXIS, FTM_SHAPING_DEFAULT_Y_FREQ) };
 

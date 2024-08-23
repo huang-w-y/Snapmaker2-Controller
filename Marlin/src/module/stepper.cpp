@@ -3425,6 +3425,7 @@ void Stepper::report_positions() {
     }
 
     // indicates block queue is empty or block is invalid
+    // 表示块队列为空或块无效
     ftMotion.runoutBlock();
 
   } // Stepper::ftMotion_blockQueueUpdate()

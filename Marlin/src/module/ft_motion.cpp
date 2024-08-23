@@ -43,6 +43,7 @@ FTMotion ftMotion;
 #endif
 
 
+// 无需动态频率调整
 #if !HAS_DYNAMIC_FREQ_MM
   static_assert(FTM_DEFAULT_DYNFREQ_MODE != dynFreqMode_Z_BASED, "dynFreqMode_Z_BASED requires a Z axis.");
 #endif
@@ -71,6 +72,7 @@ bool FTMotion::sts_stepperBusy = false;         // The stepper buffer has items 
 // NOTE: These are sized for Ulendo FBS use.
 // 注意：这些尺寸适合Ulendo FBS使用。
 // 存储基于固定时间的轨迹
+// 可以理解为存储的是轨迹点的所对应的坐标位置
 xyze_trajectory_t    FTMotion::traj;            // = {0.0f} Storage for fixed-time-based trajectory.
 // 存储固定时间轨迹窗口
 xyze_trajectoryMod_t FTMotion::trajMod;         // = {0.0f} Storage for fixed time trajectory window.
@@ -88,6 +90,9 @@ bool FTMotion::batchRdy = false;                // Indicates a batch of the fixe
   // 表示批处理已完成，正在进行后处理（如果适用），并准备转换为步骤命令。
 bool FTMotion::batchRdyForInterp = false;       // Indicates the batch is done being post processed,
                                                 //  if applicable, and is ready to be converted to step commands.
+
+// 如果当前这个 block 还没被消耗完全，又允许
+// 应该是批处理相关
 bool FTMotion::runoutEna = false;               // True if runout of the block hasn't been done and is allowed.
 
 
@@ -186,9 +191,14 @@ void FTMotion::runoutBlock() {
   if (!runoutEna) return;
 
   startPosn = endPosn_prevBlock;
+
+  // 重置
   ratio.reset();
 
+  // 数据点总数
   max_intervals = cfg.modeHasShaper() ? shaper_intervals : 0;
+
+  // 限制最小数据点总数
   if (max_intervals <= TERN(FTM_UNIFIED_BWS, FTM_BATCH_SIZE, min_max_intervals - (FTM_BATCH_SIZE)))
     max_intervals = min_max_intervals;
 
@@ -352,6 +362,7 @@ void FTMotion::loop() {
   //刷新整形函数所使用的增益。
   //在初始化阶段或者参数修改是调用
   // 计算出增益
+  // 对应于公式里的幅值
   void FTMotion::Shaping::updateShapingA(float zeta[]/*=cfg.zeta*/, float vtol[]/*=cfg.vtol*/) {
 
     const float Kx = exp(-zeta[0] * M_PI / sqrt(1.0f - sq(zeta[0]))),
@@ -624,13 +635,13 @@ void FTMotion::init() {
 // 这里会计算这个 block 对应的加速段、减速段、匀速段的速度、加速度、减速度、数据点数
 void FTMotion::loadBlockData(block_t * const current_block) {
 
-  const float totalLength = current_block->millimeters, // 原始移动长度
+  const float totalLength = current_block->millimeters, // 原始 block 移动长度
               oneOverLength = 1.0f / totalLength;
 
   // 当前 block 的起始位置肯定等于上一个 block 的结束位置
   startPosn = endPosn_prevBlock;
 
-  // 移动数据
+  // 移动数据 -- 各轴移动距离（带方向）
   xyze_pos_t moveDist = LOGICAL_AXIS_ARRAY(
     // 步数 * 导程 * 方向 == 位移长度
     current_block->steps[E_AXIS] * planner.steps_to_mm[E_AXIS] * (TEST(current_block->direction_bits, E_AXIS) ? -1 : 1),
@@ -645,7 +656,7 @@ void FTMotion::loadBlockData(block_t * const current_block) {
     current_block->steps[W_AXIS] * planner.steps_to_mm[W_AXIS] * (TEST(current_block->direction_bits, W_AXIS) ? -1 : 1)
   );
 
-  ratio = moveDist * oneOverLength; // 算出各轴移动距离，与合成运动距离的比值，耦合方向，有正负号
+  ratio = moveDist * oneOverLength; // 算出各轴移动距离与合成运动距离的比值，耦合方向，有正负号
 
   // 每步移动的合成距离
   const float spm = totalLength / current_block->step_event_count;  // (steps/mm) Distance for each step 每步移动的距离，step_event_count是最长轴的步数
@@ -841,7 +852,7 @@ void FTMotion::makeVector() {
   }
 
   // Apply shaping if in mode.
-  // 如果处于模式，则应用整形。
+  // 如果处于开启振动抑制的相关模式模式，则应用整形。
   #if HAS_X_AXIS
     if (cfg.modeHasShaper()) {
       shaping.x.d_zi[shaping.zi_idx] = traj.x[makeVector_batchIdx];
