@@ -102,10 +102,15 @@ typedef struct block_t {
   volatile uint8_t flag;                    // Block flags (See BlockFlag enum above) - Modified by ISR and main thread!
 
   // Fields used by the motion planner to manage acceleration
+        // 宣称速度
   float nominal_speed_sqr,                  // The nominal speed for this block in (mm/sec)^2
+        // 入口速度 
         entry_speed_sqr,                    // Entry speed at previous-current junction in (mm/sec)^2
+        // 最大允许交叉口进入速度（mm/sec）^2
         max_entry_speed_sqr,                // Maximum allowable junction entry speed in (mm/sec)^2
+        // 距离
         millimeters,                        // The total travel of this block in mm
+        // 加速度
         acceleration;                       // acceleration mm/sec^2
 
   union {
@@ -119,6 +124,7 @@ typedef struct block_t {
       int32_t position[NUM_AXIS];           // New position to force when this sync block is executed
     };
   };
+  // 完成当前 block 所需的总步骤数
   uint32_t step_event_count;                // The number of step events required to complete this block
 
   #if EXTRUDERS > 1
@@ -171,6 +177,7 @@ typedef struct block_t {
 
   uint32_t segment_time_us;
 
+  // Gcode 文件中的位置
   uint32_t filePos;                       // position of gcode of this block in the file
 
   block_inline_laser_t laser;
@@ -563,18 +570,23 @@ class Planner {
     #endif // HAS_POSITION_MODIFIERS
 
     // Number of moves currently in the planner including the busy block, if any
+    // 规划器中当前的移动次数，包括繁忙区块（如果有的话）
     FORCE_INLINE static uint8_t movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_tail); }
 
     // Number of nonbusy moves currently in the planner
+    // 规划器中非繁忙块的数量
     FORCE_INLINE static uint8_t nonbusy_movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_nonbusy); }
 
     // Remove all blocks from the buffer
+    // 从缓冲区中删除所有块
     FORCE_INLINE static void clear_block_buffer() { block_buffer_nonbusy = block_buffer_planned = block_buffer_head = block_buffer_tail = 0; }
 
     // Check if movement queue is full
+    // 检查移动队列是否已满
     FORCE_INLINE static bool is_full() { return block_buffer_tail == next_block_index(block_buffer_head); }
 
     // Get count of movement slots free
+    // 获取运动队列中剩余可用空间
     FORCE_INLINE static uint8_t moves_free() { return BLOCK_BUFFER_SIZE - 1 - movesplanned(); }
 
     /**
@@ -583,6 +595,9 @@ class Planner {
      * - Get the next head indices (passed by reference)
      * - Wait for the number of spaces to open up in the planner
      * - Return the first head block
+      获取下一个头部索引（通过引用传递）
+      等待规划器中打开的空间数量
+      返回第一个头块
      */
     FORCE_INLINE static block_t* get_next_free_block(uint8_t &next_buffer_head, const uint8_t count=1) {
 
@@ -590,12 +605,16 @@ class Planner {
       while (moves_free() < count)
       {
         //if request quick stop
+        // 如果是处理急停事件，则直接返回 空
         if(cleaning_buffer_counter)
           return NULL;
+
+        // 否则，等待清除缓冲区 block
         idle();
       }
 
       // Return the first available block
+      // 返回缓冲区中第一个可用的 block 地址
       next_buffer_head = next_block_index(block_buffer_head);
       return &block_buffer[block_buffer_head];
     }
@@ -694,6 +713,7 @@ class Planner {
 
     /**
      * Add a new linear movement to the buffer.
+     * 向缓冲区添加新的线性移动。
      * The target is cartesian, it's translated to delta/scara if
      * needed.
      *
@@ -878,7 +898,9 @@ FORCE_INLINE static bool has_blocks_queued() { return (block_buffer_head != bloc
     /**
      * Get the index of the next / previous block in the ring buffer
      */
+    // 获取下一个块
     static constexpr uint8_t next_block_index(const uint8_t block_index) { return BLOCK_MOD(block_index + 1); }
+    // 获取上一个块
     static constexpr uint8_t prev_block_index(const uint8_t block_index) { return BLOCK_MOD(block_index - 1); }
 
     /**
@@ -908,6 +930,7 @@ FORCE_INLINE static bool has_blocks_queued() { return (block_buffer_head != bloc
      * to reach 'target_velocity_sqr' using 'acceleration' within a given
      * 'distance'.
      */
+    // v² - v0² = 2as
     static float max_allowable_speed_sqr(const float &accel, const float &target_velocity_sqr, const float &distance) {
       return target_velocity_sqr - 2 * accel * distance;
     }

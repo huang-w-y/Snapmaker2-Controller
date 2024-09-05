@@ -104,12 +104,19 @@ Planner planner;
 /**
  * A ring buffer of moves described in steps
  */
+// 环形队列缓冲区
 block_t Planner::block_buffer[BLOCK_BUFFER_SIZE];
+                // 指向队列头
+                // 下一个可以 push 进来的区块的索引
 volatile uint8_t Planner::block_buffer_head,    // Index of the next block to be pushed
+                // 第一个非繁忙区块的索引
                  Planner::block_buffer_nonbusy, // Index of the first non-busy block
+                //  最优规划区块索引
                  Planner::block_buffer_planned, // Index of the optimally planned block
+                //  繁忙区块的索引（如果有的话）
                  Planner::block_buffer_tail;    // Index of the busy block, if any
 uint16_t Planner::cleaning_buffer_counter;      // A counter to disable queuing of blocks
+// 当队列变空时，此计数器会延迟块的传递，以便有机会合并块
 uint8_t Planner::delay_before_delivering;       // This counter delays delivery of blocks when queue becomes empty to allow the opportunity of merging blocks
 
 planner_settings_t Planner::settings;           // Initialized by settings.load()
@@ -219,8 +226,10 @@ float Planner::previous_speed[NUM_AXIS],
  * Class and Instance Methods
  */
 
+// 构造函数，调用初始化接口
 Planner::Planner() { init(); }
 
+// 初始化函数
 void Planner::init() {
   ZERO(position);
   #if HAS_POSITION_FLOAT
@@ -687,6 +696,7 @@ void Planner::init() {
     // All other 32-bit MPUs can easily do inverse using hardware division,
     // so we don't need to reduce precision or to use assembly language at all.
     // This routine, for all other archs, returns 0x100000000 / d ~= 0xFFFFFFFF / d
+    // 这是一种计算倒数的方法，但这个方法有点怪怪的
     static FORCE_INLINE uint32_t get_period_inverse(const uint32_t d) {
       return d ? 0xFFFFFFFF / d : 0xFFFFFFFF;
     }
@@ -698,28 +708,35 @@ void Planner::init() {
 /**
  * Calculate trapezoid parameters, multiplying the entry- and exit-speeds
  * by the provided factors.
+ * 计算梯形参数，将入口和出口速度乘以提供的系数。
+ * 这里会计算：入口速率、出口速率、巡航速率、加速时间、减速时间、巡航时间、入口激光功率
  **
  * ############ VERY IMPORTANT ############
  * NOTE that the PRECONDITION to call this function is that the block is
  * NOT BUSY and it is marked as RECALCULATE. That WARRANTIES the Stepper ISR
  * is not and will not use the block while we modify it, so it is safe to
  * alter its values.
+ * 请注意，调用此函数的前提条件是该块不忙，并且标记为重新计算。该保证在我们修改块时，步进器ISR不会也不会使用该块，因此更改其值是安全的。
  */
 void Planner::calculate_trapezoid_for_block(block_t* const block, const float &entry_factor, const float &exit_factor) {
 
+  // 计算入口速率、出口速率
   uint32_t initial_rate = CEIL(block->nominal_rate * entry_factor),
            final_rate = CEIL(block->nominal_rate * exit_factor); // (steps per second)
 
   // Limit minimal step rate (Otherwise the timer will overflow.)
+  // 限制最小步进率（否则计时器将溢出。）
   NOLESS(initial_rate, uint32_t(MINIMAL_STEP_RATE));
   NOLESS(final_rate, uint32_t(MINIMAL_STEP_RATE));
 
+  // 巡航速率 = 初始速率
   #if ENABLED(S_CURVE_ACCELERATION)
     uint32_t cruise_rate = initial_rate;
   #endif
 
   const int32_t accel = block->acceleration_steps_per_s2;
 
+  // 根据入口速率、出口速率、宣称速率、加速度，计算加速步骤数、减速步骤数、巡航步骤数
           // Steps required for acceleration, deceleration to/from nominal rate
   uint32_t accelerate_steps = CEIL(estimate_acceleration_distance(initial_rate, block->nominal_rate, accel)),
            decelerate_steps = FLOOR(estimate_acceleration_distance(block->nominal_rate, final_rate, -accel));
@@ -730,6 +747,7 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
   // Then we can't possibly reach the nominal rate, there will be no cruising.
   // Use intersection_distance() to calculate accel / braking time in order to
   // reach the final_rate exactly at the end of this block.
+  // 当实际无法加速到宣称速度时，调整加速步骤数、巡航步骤数、实际巡航速率
   if (plateau_steps < 0) {
     const float accelerate_steps_float = CEIL(intersection_distance(initial_rate, final_rate, accel, block->step_event_count));
     accelerate_steps = MIN(uint32_t(MAX(accelerate_steps_float, 0)), block->step_event_count);
@@ -740,21 +758,25 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
       cruise_rate = final_speed(initial_rate, accel, accelerate_steps);
     #endif
   }
+  // 当可以加速到宣称速率时，巡航速率即为宣称速率
   #if ENABLED(S_CURVE_ACCELERATION)
     else // We have some plateau time, so the cruise rate will be the nominal rate
       cruise_rate = block->nominal_rate;
   #endif
 
   #if ENABLED(S_CURVE_ACCELERATION)
+    // 计算加速段时间、减速段时间
     // Jerk controlled speed requires to express speed versus time, NOT steps
     uint32_t acceleration_time = ((float)(cruise_rate - initial_rate) / accel) * (STEPPER_TIMER_RATE),
              deceleration_time = ((float)(cruise_rate - final_rate) / accel) * (STEPPER_TIMER_RATE);
 
     // And to offload calculations from the ISR, we also calculate the inverse of those times here
+    // 为了减轻ISR的计算负担，我们还计算了这些时间的倒数
     uint32_t acceleration_time_inverse = get_period_inverse(acceleration_time);
     uint32_t deceleration_time_inverse = get_period_inverse(deceleration_time);
   #endif
 
+  // 更新 block 参数
   // Store new block parameters
   block->accelerate_until = accelerate_steps;
   block->decelerate_after = accelerate_steps + plateau_steps;
@@ -771,6 +793,7 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
   /**
    * Laser trapezoid: set entry power
    */
+  // 计算激光功率的入口功率
   block->laser.power_entry = block->laser.power * entry_factor;
 }
 
@@ -837,16 +860,21 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
 */
 
 // The kernel called by recalculate() when scanning the plan from last to first entry.
+// 反向遍历的核心接口
 void Planner::reverse_pass_kernel(block_t* const current, const block_t * const next) {
   if (current) {
     // If entry speed is already at the maximum entry speed, and there was no change of speed
     // in the next block, there is no need to recheck. Block is cruising and there is no need to
     // compute anything for this block,
     // If not, block entry speed needs to be recalculated to ensure maximum possible planned speed.
+    // 如果进入速度已经达到了最大进入速度，且在下一个block中没有速度变化，那么就无需再次检查。
+    // 该block处于巡航状态，无需对此block进行任何计算。如果不是这样，则需要重新计算block的进入速度，以确保达到可能的最大计划速度。
     const float max_entry_speed_sqr = current->max_entry_speed_sqr;
 
     // Compute maximum entry speed decelerating over the current block from its exit speed.
     // If not at the maximum entry speed, or the previous block entry speed changed
+    // 根据当前 block 的出口速度，计算在该block内减速时的最大进入速度。如果未达到最大进入速度，或者前一个block的进入速度发生了变化。
+      // 入口速度 不等于 最大入口速度，说明可以再提高入口速度？
     if (current->entry_speed_sqr != max_entry_speed_sqr || (next && TEST(next->flag, BLOCK_BIT_RECALCULATE))) {
 
       // If nominal length true, max junction speed is guaranteed to be reached.
@@ -856,27 +884,40 @@ void Planner::reverse_pass_kernel(block_t* const current, const block_t * const 
       // block nominal speed limits both the current and next maximum junction speeds. Hence, in both
       // the reverse and forward planners, the corresponding block junction speed will always be at the
       // the maximum junction speed and may always be ignored for any speed reduction checks.
+      // 如果标称长度为真，则保证可达到最大连接速度。
+      // 如果一个block能够在其长度范围内从标称速度加速或减速到零，那么当前block和下一个block的连接速度在减速和加速时分别保证总是处于其最大连接速度。
+      //   这是由于当前block的标称速度限制了当前和下一个连接点的最大速度。因此，在逆向和正向规划中，相应的block连接速度将始终处于最大连接速度，
+      //   并且在进行任何速度降低检查时均可忽略。
 
+      // 这里是计算入口速度
+      // 也就是，如果长度足够，那就使用最大入口速度，
+      // 如果长度不够，那就使用 那段距离所允许的最大入口速度（这个要根据公式计算）
       const float new_entry_speed_sqr = TEST(current->flag, BLOCK_BIT_NOMINAL_LENGTH)
         ? max_entry_speed_sqr
         : MIN(max_entry_speed_sqr, max_allowable_speed_sqr(-current->acceleration, next ? next->entry_speed_sqr : sq(float(min_planner_speed)), current->millimeters));
+      
+      // 如果记录的入口速度和计算的入口速度不一致，
       if (current->entry_speed_sqr != new_entry_speed_sqr) {
 
         // Need to recalculate the block speed - Mark it now, so the stepper
         // ISR does not consume the block before being recalculated
+        // 需要重新计算 block 速度-现在标记它，这样步进器ISR在重新计算之前不会消耗 block
         SBI(current->flag, BLOCK_BIT_RECALCULATE);
 
         // But there is an inherent race condition here, as the block may have
         // become BUSY just before being marked RECALCULATE, so check for that!
+        // 但是这里有一个固有的竞争条件，因为 block 在标记为 RECALCULATE 之前可能已经变得繁忙(即已经被步进器使用了)，所以请检查一下！
         if (stepper.is_block_busy(current)) {
           // Block became busy. Clear the RECALCULATE flag (no point in
           // recalculating BUSY blocks). And don't set its speed, as it can't
           // be updated at this time.
+          // 不要设置其速度，因为此时无法更新。
           CBI(current->flag, BLOCK_BIT_RECALCULATE);
         }
         else {
           // Block is not BUSY so this is ahead of the Stepper ISR:
           // Just Set the new entry speed.
+          // 不为繁忙 block，则更新其入口速度
           current->entry_speed_sqr = new_entry_speed_sqr;
         }
       }
@@ -888,29 +929,40 @@ void Planner::reverse_pass_kernel(block_t* const current, const block_t * const 
  * recalculate() needs to go over the current plan twice.
  * Once in reverse and once forward. This implements the reverse pass.
  */
+// 反向遍历
 void Planner::reverse_pass() {
   // Initialize block index to the last block in the planner buffer.
+  // 指向队列最后一个 block
   uint8_t block_index = prev_block_index(block_buffer_head);
 
   // Read the index of the last buffer planned block.
   // The ISR may change it so get a stable local copy.
+  // 指向最后一个已规划的 block
+  // 因为 ISR 中可能会改变他，所以此处作本地备份
   uint8_t planned_block_index = block_buffer_planned;
 
   // If there was a race condition and block_buffer_planned was incremented
   //  or was pointing at the head (queue empty) break loop now and avoid
   //  planning already consumed blocks
+  // 如果存在竞争条件，并且 block_buffer_planned 被递增或指向头部（队列为空），则立即中断循环，并避免计划已消耗的块
   if (planned_block_index == block_buffer_head) return;
 
   // Reverse Pass: Coarsely maximize all possible deceleration curves back-planning from the last
   // block in buffer. Cease planning when the last optimal planned or tail pointer is reached.
   // NOTE: Forward pass will later refine and correct the reverse pass to create an optimal plan.
+  // 反向遍历：从缓冲区的最后一个 block 开始，粗略地最大化所有可能的减速曲线。当达到最后一个最佳规划或尾部指针时，停止规划。
+  // 注意：正向遍历稍后将改进和纠正反向遍历，以创建最佳规划。
   const block_t *next = NULL;
+  // 遍历所有尚未规划的 block
   while (block_index != planned_block_index) {
 
     // Perform the reverse pass
+    // 指向当前待规划的 block 
     block_t *current = &block_buffer[block_index];
 
     // Only consider non sync blocks
+    // 仅考虑非同步块
+    // 同步块的话，应该就直接使用就好，无需规划
     if (!TEST(current->flag, BLOCK_BIT_SYNC_POSITION)) {
       reverse_pass_kernel(current, next);
       next = current;
@@ -933,6 +985,7 @@ void Planner::reverse_pass() {
   }
 }
 
+// 前向遍历核心接口
 // The kernel called by recalculate() when scanning the plan from first to last entry.
 void Planner::forward_pass_kernel(const block_t* const previous, block_t* const current, const uint8_t block_index) {
   if (previous) {
@@ -940,6 +993,8 @@ void Planner::forward_pass_kernel(const block_t* const previous, block_t* const 
     // change, adjust the entry speed accordingly. Entry speeds have already been reset,
     // maximized, and reverse-planned. If nominal length is set, max junction speed is
     // guaranteed to be reached. No need to recheck.
+    // 如果前一个块是加速块，太短而无法完成全速变化，请相应地调整进入速度。
+    // 进入速度已经重置、最大化和反向计划。如果设置了标称长度，则保证达到最大接合速度。无需重新检查。
     if (!TEST(previous->flag, BLOCK_BIT_NOMINAL_LENGTH) &&
       previous->entry_speed_sqr < current->entry_speed_sqr) {
 
@@ -978,6 +1033,9 @@ void Planner::forward_pass_kernel(const block_t* const previous, block_t* const 
     // point in the buffer. When the plan is bracketed by either the beginning of the
     // buffer and a maximum entry speed or two maximum entry speeds, every block in between
     // cannot logically be further improved. Hence, we don't have to recompute them anymore.
+    // 任何以其最大进入速度设置的区块都会在缓冲区中的这一点之前创建一个最优计划。
+    // 当计划被缓冲区的开始和一个最大进入速度或者两个最大进入速度所界定时，介于其间的每个区块在逻辑上都不可能得到进一步的优化。
+    // 因此，我们无需再重新计算它们。
     if (current->entry_speed_sqr == current->max_entry_speed_sqr)
       block_buffer_planned = block_index;
   }
@@ -987,6 +1045,7 @@ void Planner::forward_pass_kernel(const block_t* const previous, block_t* const 
  * recalculate() needs to go over the current plan twice.
  * Once in reverse and once forward. This implements the forward pass.
  */
+// 向前遍历
 void Planner::forward_pass() {
 
   // Forward Pass: Forward plan the acceleration curve from the planned pointer onward.
@@ -996,6 +1055,10 @@ void Planner::forward_pass() {
   //  by the stepper ISR,  so read it ONCE. It it guaranteed that block_buffer_planned
   //  will never lead head, so the loop is safe to execute. Also note that the forward
   //  pass will never modify the values at the tail.
+  // 向前遍历：从计划的指针位置开始，前向规划加速度曲线。
+  // 同时扫描以寻找最优规划断点，并适当地更新计划指针。
+  // 从缓冲区计划指针开始。注意，block_buffer_planned 可能会被步进中断服务程序（ISR）修改，因此只需读取一次。
+  // 可以保证 block_buffer_planned 永远不会领先于头指针，因此循环执行是安全的。另外请注意，前向传递永远不会修改尾部的值。
   uint8_t block_index = block_buffer_planned;
 
   block_t *current;
@@ -1005,6 +1068,7 @@ void Planner::forward_pass() {
     // Perform the forward pass
     current = &block_buffer[block_index];
 
+    // 跳过同步块
     // Skip SYNC blocks
     if (!TEST(current->flag, BLOCK_BIT_SYNC_POSITION)) {
       // If there's no previous block or the previous block is not
@@ -1025,14 +1089,18 @@ void Planner::forward_pass() {
  * Recalculate the trapezoid speed profiles for all blocks in the plan
  * according to the entry_factor for each junction. Must be called by
  * recalculate() after updating the blocks.
+ * 根据每个路口（junction）的 entry_factor（入口系数），重新计算规划器中所有 block 的梯形速度分布。
+ * 此操作必须在更新 block 后通过 recalculate() 函数调用。
  */
 void Planner::recalculate_trapezoids() {
   // The tail may be changed by the ISR so get a local copy.
+  // ISR可能会更改尾部，因此请获取本地副本。
   uint8_t block_index = block_buffer_tail,
           head_block_index = block_buffer_head;
   // Since there could be a sync block in the head of the queue, and the
   // next loop must not recalculate the head block (as it needs to be
   // specially handled), scan backwards to the first non-SYNC block.
+  // 由于队列的头部可能有一个同步块，并且下一个循环不能重新计算头部块（因为它需要特殊处理），因此向后扫描到第一个非sync块。
   while (head_block_index != block_index) {
 
     // Go back (head always point to the first free block)
@@ -1049,18 +1117,24 @@ void Planner::recalculate_trapezoids() {
   }
 
   // Go from the tail (currently executed block) to the first block, without including it)
+  // 从尾部（当前执行的块）转到第一个块，不包括它）
   block_t *current = NULL, *next = NULL;
   float current_entry_speed = 0.0, next_entry_speed = 0.0;
   while (block_index != head_block_index) {
 
     next = &block_buffer[block_index];
 
+    // 跳过同步块
     // Skip sync blocks
     if (!TEST(next->flag, BLOCK_BIT_SYNC_POSITION)) {
       next_entry_speed = SQRT(next->entry_speed_sqr);
 
+      // 第一个是繁忙块，所以无需处理
+
+      // 计算当前 block
       if (current) {
         // Recalculate if current block entry or exit junction speed has changed.
+        // 如果当前 block 的入口或出口速度发送变化，则重新计算
         if (TEST(current->flag, BLOCK_BIT_RECALCULATE) || TEST(next->flag, BLOCK_BIT_RECALCULATE)) {
 
           // Mark the current block as RECALCULATE, to protect it from the Stepper ISR running it.
@@ -1071,13 +1145,18 @@ void Planner::recalculate_trapezoids() {
           // But there is an inherent race condition here, as the block maybe
           // became BUSY, just before it was marked as RECALCULATE, so check
           // if that is the case!
+          // 如果步进器还未使用到此 block
           if (!stepper.is_block_busy(current)) {
             // Block is not BUSY, we won the race against the Stepper ISR:
 
             // NOTE: Entry and exit factors always > 0 by all previous logic operations.
+            // 注：所有先前的逻辑运算中，进入和退出因子始终大于0。
+            // 宣称速度
             const float current_nominal_speed = SQRT(current->nominal_speed_sqr),
                         nomr = 1.0f / current_nominal_speed;
+            // 计算出入口速度、出口速度、巡航速度、加速时间、减速时间、巡航时间等
             calculate_trapezoid_for_block(current, current_entry_speed * nomr, next_entry_speed * nomr);
+            // 线性推进相关
             #if ENABLED(LIN_ADVANCE)
               if (current->use_advance_lead) {
                 const float comp = current->e_D_ratio * extruder_advance_K[active_extruder] * settings.axis_steps_per_mm[E_AXIS];
@@ -1089,6 +1168,7 @@ void Planner::recalculate_trapezoids() {
 
           // Reset current only to ensure next trapezoid is computed - The
           // stepper is free to use the block from now on.
+          // 仅重置当前块
           CBI(current->flag, BLOCK_BIT_RECALCULATE);
         }
       }
@@ -1100,12 +1180,15 @@ void Planner::recalculate_trapezoids() {
     block_index = next_block_index(block_index);
   }
 
+  // 缓冲区中的最后/最新块。退出速度设置为MINIMUM_PLANNER_speed。总是重新计算。
   // Last/newest block in buffer. Exit speed is set with MINIMUM_PLANNER_SPEED. Always recalculated.
   if (next) {
 
     // Mark the next(last) block as RECALCULATE, to prevent the Stepper ISR running it.
     // As the last block is always recalculated here, there is a chance the block isn't
     // marked as RECALCULATE yet. That's the reason for the following line.
+    // 将下一个（最后一个）块标记为RECALCULATE，以防止步进器ISR运行它。
+    // 由于最后一个块总是在这里重新计算，因此该块有可能尚未标记为RECALCULITE。这就是下面这句话的原因。
     SBI(next->flag, BLOCK_BIT_RECALCULATE);
 
     // But there is an inherent race condition here, as the block maybe
@@ -1128,14 +1211,18 @@ void Planner::recalculate_trapezoids() {
 
     // Reset next only to ensure its trapezoid is computed - The stepper is free to use
     // the block from now on.
+    // 接下来只重置以确保其梯形被计算出来——从现在开始，步进器可以自由使用该块。
     CBI(next->flag, BLOCK_BIT_RECALCULATE);
   }
 }
 
+// 遍历计算
 void Planner::recalculate() {
   // Initialize block index to the last block in the planner buffer.
+  // 指向缓冲区的最后一个块
   const uint8_t block_index = prev_block_index(block_buffer_head);
   // If there is just one block, no planning can be done. Avoid it!
+  // 如果只有一个块，就无法进行规划。避开它！
   if (block_index != block_buffer_planned) {
     reverse_pass();
     forward_pass();
@@ -1375,6 +1462,7 @@ void Planner::check_axes_activity() {
    * rx, ry, rz - Cartesian positions in mm
    *              Leveled XYZ on completion
    */
+  // 应用调平数据
   void Planner::apply_leveling(float &rx, float &ry, float &rz) {
     if (!leveling_active) return;
 
@@ -1417,6 +1505,7 @@ void Planner::check_axes_activity() {
     #endif
   }
 
+  // 撤销调平数据
   void Planner::unapply_leveling(float raw[XYZ]) {
 
     if (leveling_active) {
@@ -1596,6 +1685,7 @@ void Planner::synchronize() {
     #endif
   #endif
 
+  // 背隙补偿相关
   void Planner::add_backlash_correction_steps(const int32_t dx, const int32_t dy, const int32_t dz, const int32_t db, const uint8_t dm, block_t * const block) {
     static uint8_t last_direction_bits;
     uint8_t changed_dir = last_direction_bits ^ dm;
@@ -1662,6 +1752,7 @@ void Planner::synchronize() {
  * Planner::_buffer_steps
  *
  * Add a new linear movement to the planner queue (in terms of steps).
+ * 将新的线性运动添加到规划器队列中（以步数表示）。
  *
  *  target      - target position in steps units
  *  target_float - target position in direct (mm, degrees) units. optional
@@ -1682,15 +1773,20 @@ bool Planner::_buffer_steps(const int32_t (&target)[X_TO_E]
 ) {
 
   // If we are cleaning, do not accept queuing of movements
+  // 如果正在清除缓冲区，则返回 false
   if (cleaning_buffer_counter) return false;
 
   // Wait for the next available block
+  // 等待并获取一个可用 block 空间
   uint8_t next_buffer_head;
   block_t * const block = get_next_free_block(next_buffer_head);
+
+  // 这种情况一般是用于处理急停
   if(block == NULL)
     return false;
 
   // Fill the block with the specified movement
+  // 用指定的移动填充块
   if (!_populate_block(block, false, target
     #if HAS_POSITION_FLOAT
       , target_float
@@ -1706,12 +1802,14 @@ bool Planner::_buffer_steps(const int32_t (&target)[X_TO_E]
   }
 
   // record the gcode line number in its block, then we can use in power-loss data recording
+  // 将 gcode 行号记录在其块中，然后我们可以在 掉电 数据记录中使用
   if (commands_in_queue)
     block->filePos = CommandLine[cmd_queue_index_r];
   else
     block->filePos = INVALID_CMD_LINE;
 
   // If this is the first added movement, reload the delay, otherwise, cancel it.
+  // 如果这是第一个添加的动作，请重新加载延迟，否则请取消它。
   if (block_buffer_head == block_buffer_tail) {
     // If it was the first queued block, restart the 1st block delivery delay, to
     // give the planner an opportunity to queue more movements and plan them
@@ -1724,8 +1822,10 @@ bool Planner::_buffer_steps(const int32_t (&target)[X_TO_E]
         (MODULE_TOOLHEAD_LASER_40W == ModuleBase::toolhead()) ) {
       // Laser greyscale is special case that queue only have one item is normal.
       // Adding extra delay will cause long print time.
+      // 激光有种特殊场景：灰度/打点。这种就只有一个 Block，如果延迟传递，则会延迟打印时间，影响打印效果
       delay_before_delivering = 0;
     } else {
+      // 
       delay_before_delivering = BLOCK_DELAY_FOR_1ST_MOVE;
     }
   }
@@ -1733,6 +1833,7 @@ bool Planner::_buffer_steps(const int32_t (&target)[X_TO_E]
   // Move buffer head
   block_buffer_head = next_buffer_head;
 
+  // 重新计算和优化梯形速度曲线
   // Recalculate and optimize trapezoidal speed profiles
   recalculate();
 
@@ -1744,6 +1845,7 @@ bool Planner::_buffer_steps(const int32_t (&target)[X_TO_E]
  * Planner::_populate_block
  *
  * Fills a new linear movement in the block (in terms of steps).
+ * 在块中填充新的线性移动（以步数表示）。
  *
  *  target      - target position in steps units
  *  fr_mm_s     - (target) speed of the move
@@ -1762,6 +1864,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   , float fr_mm_s, const uint8_t extruder, const float &millimeters/*=0.0*/
 ) {
 
+  // 计算出位移差
   const int32_t dx = target[X_AXIS] - position[X_AXIS],
                 dy = target[Y_AXIS] - position[Y_AXIS],
                 dz = target[Z_AXIS] - position[Z_AXIS],
@@ -1782,6 +1885,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     SERIAL_ECHOLNPGM(" steps)");
   //*/
 
+  // 冷挤出保护、超长挤出保护
   #if EITHER(PREVENT_COLD_EXTRUSION, PREVENT_LENGTHY_EXTRUDE)
     if (de) {
       #if ENABLED(PREVENT_COLD_EXTRUSION)
@@ -1807,6 +1911,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     }
   #endif // PREVENT_COLD_EXTRUSION || PREVENT_LENGTHY_EXTRUDE
 
+  // 记录移动方向
   // Compute direction bit-mask for this block
   uint8_t dm = 0;
   #if CORE_IS_XY
@@ -1838,9 +1943,11 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   const float esteps_float = de * e_factor[extruder];
   const uint32_t esteps = ABS(esteps_float) + 0.5f;
 
+  // 清除所有标志，包括忙标志
   // Clear all flags, including the "busy" bit
   block->flag = 0x00;
 
+  // 记录激光功率
   block->laser.status = laser_inline.status;
   block->laser.power = laser_inline.status.isEnabled ? laser_inline.power : 0;
   block->laser.sync_power = laser_inline.sync_power;
@@ -1848,6 +1955,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   // Set direction bits
   block->direction_bits = dm;
 
+  // 记录 各轴 steps 数
   // Number of steps for each axis
   // See http://www.corexy.com/theory.html
   #if CORE_IS_XY
@@ -1873,6 +1981,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     block->steps[Z_AXIS] = ABS(dz);
     block->steps[B_AXIS] = ABS(db);
   #endif
+
 
   /**
    * This part of the code calculates the total length of the movement.
@@ -1904,6 +2013,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
       delta_mm[C_AXIS] = CORESIGN(db - dc) * steps_to_mm[C_AXIS];
     #endif
   #else
+    // 计算位移差，mm 单位
     float delta_mm[X_TO_E];
     delta_mm[X_AXIS] = dx * steps_to_mm[X_AXIS];
     delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
@@ -1912,11 +2022,13 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   #endif
   delta_mm[E_AXIS] = esteps_float * steps_to_mm[E_AXIS_N(extruder)];
 
+  // 限制最小位移
   if (block->steps[X_AXIS] < MIN_STEPS_PER_SEGMENT && block->steps[Y_AXIS] < MIN_STEPS_PER_SEGMENT && block->steps[Z_AXIS] < MIN_STEPS_PER_SEGMENT
     && block->steps[B_AXIS] < MIN_STEPS_PER_SEGMENT) {
     block->millimeters = ABS(delta_mm[E_AXIS]);
   }
   else {
+    // 计算位移合成长度
     if (millimeters)
       block->millimeters = millimeters;
     else
@@ -1941,6 +2053,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
      * A correction function is permitted to add steps to an axis, it
      * should *never* remove steps!
      */
+    // 背隙补偿
     #if ENABLED(BACKLASH_COMPENSATION)
       add_backlash_correction_steps(dx, dy, dz, db, dm, block);
     #endif
@@ -2209,6 +2322,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     }
   #endif
 
+  // 最大速度限制
   // Calculate and limit speed in mm/sec for each axis
   float current_speed[NUM_AXIS], speed_factor = 1.0f; // factor <1 decreases speed
   LOOP_X_TO_E(i) {
@@ -2275,6 +2389,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
     block->nominal_speed_sqr = block->nominal_speed_sqr * sq(speed_factor);
   }
 
+  // 限制加速度
   // Compute and limit the acceleration rate for the trapezoid generator.
   const float steps_per_mm = block->step_event_count * inverse_millimeters;
   uint32_t accel;
@@ -2460,8 +2575,11 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
       normalize_junction_vector(unit_vec);
     #endif
 
+    // 计算最大转角速度
+
     // Skip first block or when previous_nominal_speed is used as a flag for homing and offset cycles.
     if (moves_queued && !UNEAR_ZERO(previous_nominal_speed_sqr)) {
+      // 计算余弦角
       // Compute cosine of angle between previous and current path. (prev_unit_vec is negative)
       // NOTE: Max junction velocity is computed without sin() or acos() by trig half angle identity.
       float junction_cos_theta = -previous_unit_vec[X_AXIS] * unit_vec[X_AXIS]
@@ -2506,6 +2624,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
         }
       }
 
+      // 最大转角速度 = MIN(最大转角速度计算值，当前 block 宣称速度，上一个 block 宣称速度)
       // Get the lowest speed
       vmax_junction_sqr = MIN(vmax_junction_sqr, block->nominal_speed_sqr, previous_nominal_speed_sqr);
     }
@@ -2620,6 +2739,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   // Initialize block entry speed. Compute based on deceleration to user-defined MINIMUM_PLANNER_SPEED.
   const float v_allowable_sqr = max_allowable_speed_sqr(-block->acceleration, sq(float(min_planner_speed)), block->millimeters);
 
+  // 记录入口速度
   // If we are trying to add a split block, start with the
   // max. allowed speed to avoid an interrupted first move.
   block->entry_speed_sqr = !split_move ? sq(float(min_planner_speed)) : MIN(vmax_junction_sqr, v_allowable_sqr);
@@ -2632,6 +2752,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   // block nominal speed limits both the current and next maximum junction speeds. Hence, in both
   // the reverse and forward planners, the corresponding block junction speed will always be at the
   // the maximum junction speed and may always be ignored for any speed reduction checks.
+  // 记录标志，看是否记录足够长，以便加速度宣称速度
   block->flag |= block->nominal_speed_sqr <= v_allowable_sqr ? BLOCK_FLAG_RECALCULATE | BLOCK_FLAG_NOMINAL_LENGTH : BLOCK_FLAG_RECALCULATE;
 
   // Update previous path unit_vector and nominal speed
@@ -2639,6 +2760,7 @@ bool Planner::_populate_block(block_t * const block, bool split_move,
   previous_nominal_speed_sqr = block->nominal_speed_sqr;
 
   // Update the position
+  // 更新当前位置为目标位置
   static_assert(COUNT(target) > 1, "Parameter to _buffer_steps must be (&target)[XYZE]!");
   COPY(position, target);
   #if HAS_POSITION_FLOAT
@@ -2701,6 +2823,7 @@ void Planner::buffer_sync_block() {
  * Planner::buffer_segment
  *
  * Add a new linear movement to the buffer in axis units.
+ * 以轴为单位向缓冲区添加新的线性移动。
  *
  * Leveling and kinematics should be applied ahead of calling this.
  *
@@ -2717,6 +2840,7 @@ bool Planner::buffer_segment(const float &x, const float &y, const float &z, con
 ) {
 
   // If we are cleaning, do not accept queuing of movements
+  // 如何正在清除缓冲区，则不要结束新的数据
   if (cleaning_buffer_counter) return false;
 
   // When changing extruders recalculate steps corresponding to the E position
@@ -2781,6 +2905,7 @@ bool Planner::buffer_segment(const float &x, const float &y, const float &z, con
   //*/
 
   // Queue the movement
+  // 往队列中添加移动数据
     if (
     !_buffer_steps(target
       #if HAS_POSITION_FLOAT
@@ -2793,12 +2918,14 @@ bool Planner::buffer_segment(const float &x, const float &y, const float &z, con
     )
   ) return false;
 
+  // 唤醒步进器
   stepper.wake_up();
   return true;
 } // buffer_segment()
 
 /**
  * Add a new linear movement to the buffer.
+ * 向缓冲区添加新的线性移动。
  * The target is cartesian, it's translated to delta/scara if
  * needed.
  *
@@ -2814,7 +2941,9 @@ bool Planner::buffer_line(const float &rx, const float &ry, const float &rz, con
     , const float &inv_duration
   #endif
 ) {
+  // 原始目标位置
   float raw[X_TO_E] = { rx, ry, rz, rb, e };
+  // 应用调平数据后的目标位置
   #if HAS_POSITION_MODIFIERS
     apply_modifiers(raw);
   #endif
