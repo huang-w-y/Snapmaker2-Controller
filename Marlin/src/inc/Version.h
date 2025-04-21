@@ -38,7 +38,7 @@
   /**
    * Marlin release version identifier
    */
-  #define SHORT_BUILD_VERSION "SM2-99.0.1-maintenance"
+  #define SHORT_BUILD_VERSION "SM2-99.0.1_maintenance"
 
   /**
    * Verbose version identifier which should contain a reference to the location
