@@ -825,10 +825,10 @@ ErrCode ToolHeadDualExtruder::ToolChange(uint8_t new_extruder, bool use_compensa
     return E_PARAM;
   }
 
-  if (!all_axes_homed()) {
-    LOG_I("need go home before toolchange\n");
-    return E_FAILURE;
-  }
+  // if (!all_axes_homed()) {
+  //   LOG_I("need go home before toolchange\n");
+  //   return E_FAILURE;
+  // }
 
   if (new_extruder != active_extruder) {
     LOOP_XYZ(i) {

@@ -925,6 +925,8 @@ private:
 
   static void M3005();
 
+  static void M4000();
+
   static void T(const uint8_t tool_index);
 
   #if ENABLED(FT_MOTION)
